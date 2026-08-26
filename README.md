@@ -26,6 +26,24 @@ précision certifiée, appelables depuis Python/C.
 - OpenMP activé seulement si n ≥ 192 ; lancer avec `OMP_WAIT_POLICY=ACTIVE`
 - timings VM bruités (±2× entre runs), gains observés jusqu'à ×12 à n=256 machine au repos
 
+## Pipeline NN end-to-end (bench_nn)
+
+`Y = gelu(X · Wᵀ)` — pattern FFN transformer. M=1024, K=768, N=3072 (4.8 GFLOP).
+
+| Implémentation | Total | Détail |
+|---|---|---|
+| **SpearVM** (matmul AVX4 + batch_gelu) | 520–795 ms | matmul 6–9 GFLOPS + gelu 4–8 ms |
+| numpy (BLAS + scipy erf) | 550–1630 ms | même machine, même run |
+
+- err max vs référence exacte : **0.0797** (= contrat datasheet gelu ≤0.079)
+- la forme linéarisée sature proprement hors domaine : err bornée ~0.002·|x| jusqu'à ±25
+- validation : `bin/bench_nn.exe` puis `python examples/check_nn.py`
+
+```bash
+gcc -O3 -march=native -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn -lm
+OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
+```
+
 ## Précision (datasheet)
 
 Chaque noyau documente son erreur max vs IEEE :
