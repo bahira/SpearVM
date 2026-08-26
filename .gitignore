@@ -12,3 +12,6 @@ ts.txt
 dist/
 spur_math/spur_kernels.dll
 spur_math/libspur_kernels.so
+
+build/
+*.egg-info/
