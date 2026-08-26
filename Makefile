@@ -1,26 +1,41 @@
-# Makefile SpearVM
+# Makefile SpearVM (baseline AVX2, pas de -march=native)
 CC      = gcc
-CFLAGS  = -O3 -Wall -Iinclude
+CFLAGS  = -O3 -mavx2 -mfma
+JITCFLAGS = -O2 -mavx2 -mfma -Iinclude
 LDLIBS  = -lm
 
-all: bin/spur.dll bin/test_spur.exe
+.PHONY: all kernels jit encoding bench clean test
+
+all: kernels jit encoding bench
+
+kernels: bin/spur_kernels.dll
+jit: bin/spur.dll
+
+bin/spur_kernels.dll: src/spur_kernels.c
+	@mkdir -p bin
+	$(CC) $(CFLAGS) -fopenmp -shared -o $@ src/spur_kernels.c $(LDLIBS)
 
 bin/spur.dll: src/spur.c include/spur.h
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -shared -o $@ src/spur.c $(LDLIBS)
+	$(CC) $(JITCFLAGS) -shared -o $@ src/spur.c $(LDLIBS)
 
-bin/test_spur.exe: examples/test_spur.c bin/spur.dll
+encoding: bin/test_encoding.exe
+
+bin/test_encoding.exe: tests/test_encoding.c
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -Iinclude examples/test_spur.c -Lbin -lspur -o $@ $(LDLIBS)
+	$(CC) -O2 -mavx2 -static -o $@ tests/test_encoding.c
 
 bench: bin/bench_native_vs_jit.exe
-	cd bin && ./bench_native_vs_jit.exe
 
-bin/bench_native_vs_jit.exe: examples/bench_native_vs_jit.c
+bin/bench_native_vs_jit.exe: examples/bench_native_vs_jit.c bin/spur.dll
 	@mkdir -p bin
-	$(CC) -O3 examples/bench_native_vs_jit.c -o $@ $(LDLIBS)
+	$(CC) -O3 -Iinclude examples/bench_native_vs_jit.c bin/spur.dll -o $@ $(LDLIBS)
+
+test: all
+	./bin/test_encoding.exe
+	PYTHONPATH=. python -m pytest tests/ -q
 
 clean:
-	rm -rf bin jit_dll.bin
-
-.PHONY: all bench clean
+	rm -rf bin dist build *.egg-info spur_math/_native \
+	       spur_math/spur_kernels.dll spur_math/spur_jit.dll \
+	       map_dbg.bin nn_io.bin

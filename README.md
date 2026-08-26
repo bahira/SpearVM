@@ -1,5 +1,7 @@
 # SpearVM
 
+[![CI](https://github.com/bahira/SpearVM/actions/workflows/ci.yml/badge.svg)](https://github.com/bahira/SpearVM/actions/workflows/ci.yml)
+
 **Accélérateur mathématique SIMD** — noyaux transcendantals vectorisés AVX2,
 précision certifiée, matmul tuilé, couche FFN fusionnée avec backprop,
 mini-JIT x64 pour programmes élément-par-élément. Python/C.
@@ -7,6 +9,11 @@ mini-JIT x64 pour programmes élément-par-élément. Python/C.
 ```bash
 pip install spur-math
 ```
+
+> Windows : wheel binaire prêt. Linux/macOS : le sdist embarque les sources C ;
+> au premier import, `spur_math` se compile tout seul si gcc/clang est
+> présent (cache dans `spur_math/_native/`), sinon suivez le message d'aide.
+> CPU requis : AVX2 + FMA (Haswell 2013+, Zen 2017+) — vérifié à l'import.
 
 ## Speedups mesurés (4M éléments, OpenMP multi-cœur)
 

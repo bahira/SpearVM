@@ -1,17 +1,58 @@
 import ctypes
+import glob
 import os
+import shutil
+import subprocess
 
 import numpy as np
 
-_dll_path = os.path.join(os.path.dirname(__file__), "spur_kernels.dll")
+_PKG = os.path.dirname(os.path.abspath(__file__))
+_SRC_C = os.path.join(_PKG, "src", "spur_kernels.c")
+
+
+def _try_compile():
+    """Pas de binaire embarque (sdist Linux/macOS) : compilation unique en cache."""
+    cc = shutil.which("gcc") or shutil.which("cc")
+    if not cc or not os.path.exists(_SRC_C):
+        return None
+    cache = os.environ.get("SPUR_CACHE_DIR",
+                           os.path.join(_PKG, "_native"))
+    try:
+        os.makedirs(cache, exist_ok=True)
+    except OSError:
+        import tempfile
+        cache = os.path.join(tempfile.gettempdir(), "spur_math_native")
+        os.makedirs(cache, exist_ok=True)
+    out = os.path.join(cache, "libspur_kernels.so")
+    if not os.path.exists(out):
+        cmd = [cc, "-O3", "-mavx2", "-mfma", "-fopenmp", "-shared",
+               "-o", out, _SRC_C]
+        try:
+            subprocess.check_call(cmd)
+        except (subprocess.CalledProcessError, OSError):
+            return None
+    return out
+
+
+_dll_path = os.path.join(_PKG, "spur_kernels.dll")
 if not os.path.exists(_dll_path):
-    _dll_path = os.path.join(os.path.dirname(__file__), "libspur_kernels.so")
-if not os.path.exists(_dll_path):
-    raise ImportError(
-        "spur_kernels DLL/SO introuvable a cote du package. "
-        "Compilez-le: gcc -O3 -march=native -mavx2 -mfma -fopenmp -shared "
-        "-o spur_math/spur_kernels.dll src/spur_kernels.c"
-    )
+    cands = sorted(glob.glob(os.path.join(_PKG, "libspur_kernels*.so"))) or \
+            sorted(glob.glob(os.path.join(_PKG, "_native",
+                                          "libspur_kernels*.so")))
+    if cands:
+        _dll_path = cands[0]
+    else:
+        _compiled = _try_compile()
+        if _compiled:
+            _dll_path = _compiled
+        else:
+            raise ImportError(
+                "spur_math : binaire introuvable et compilation impossible.\n"
+                "- Windows : reinstallez depuis le wheel win_amd64\n"
+                "- Linux/macOS : installez gcc/clang puis reessayez ; ou:\n"
+                "  gcc -O3 -mavx2 -mfma -fopenmp -shared "
+                "-o spur_math/libspur_kernels.so src/spur_kernels.c"
+            )
 
 _pkg_dir = os.path.dirname(os.path.abspath(_dll_path))
 if hasattr(os, "add_dll_directory"):
