@@ -13,7 +13,11 @@ if not os.path.exists(_dll_path):
         "-o spur_math/spur_kernels.dll src/spur_kernels.c"
     )
 
-_dll = ctypes.CDLL(os.path.abspath(_dll_path))
+_pkg_dir = os.path.dirname(os.path.abspath(_dll_path))
+if hasattr(os, "add_dll_directory"):
+    os.add_dll_directory(_pkg_dir)  # runtimes MinGW a cote du .dll
+
+_dll = ctypes.CDLL(_dll_path)
 
 # refus propre (au lieu de SIGILL) sur CPU sans AVX2+FMA
 _dll.spur_cpu_ok.restype = ctypes.c_int

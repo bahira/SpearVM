@@ -31,12 +31,15 @@ jobs:
         run: |
           gcc -O3 -mavx2 -mfma -fopenmp -shared \
               -o spur_math/spur_kernels.dll src/spur_kernels.c
+          GCCBIN=$(dirname $(which gcc))
+          cp "$GCCBIN"/libgcc_s_seh-1.dll "$GCCBIN"/libwinpthread-1.dll \
+             "$GCCBIN"/libgomp-1.dll spur_math/ || true
 
-      - name: Tests noyaux + training (les deux OS)
+      - name: Tests noyaux + training + fp32/backprop
         env:
           PYTHONPATH: .
           OMP_WAIT_POLICY: ACTIVE
-        run: pytest tests/test_correctness.py tests/test_train.py -v
+        run: pytest tests/test_correctness.py tests/test_train.py tests/test_backprop_f32.py -v
 
       - name: Test matmul vs BLAS
         if: runner.os == 'Linux'
