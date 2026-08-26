@@ -112,6 +112,21 @@ int spur_cpu_ok(void){
     return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 }
 
+
+static inline float hsum8(__m256 v){
+    __m128 lo=_mm256_castps256_ps128(v),hi=_mm256_extractf128_ps(v,1);
+    lo=_mm_add_ps(lo,hi);
+    __m128 s=_mm_movehdup_ps(lo);
+    __m128 s2=_mm_add_ps(lo,s);
+    __m128 shuf=_mm_add_ps(s2,_mm_movehl_ps(s2,s2));
+    return _mm_cvtss_f32(shuf);
+}
+static inline float gelu_f32_scalar(float x){
+    float u=0.306923f*x+0.501f;
+    if(u<0.0f)u=0.0f; if(u>1.002f)u=1.002f;
+    return 0.997729f*(x*u)-0.004004f;
+}
+
 #define MM_KC 256   /* profondeur tuile : bande A de 4*KC*8 = 8 Ko          */
 #define MM_NC 256   /* largeur tuile  : tuile B de NC*KC*8  = 512 Ko (L2)   */
 
@@ -253,6 +268,235 @@ void spur_batch_gelu_backward(const double* dY,const double* x,double* dX,
     for(long long i=vec;i<n;i++){
         double u=c306*x[i]+c5;
         double g=(u<=0.0)?0.0:((u>=cm)?ck*cm:ck*(u+c306*x[i]));
+        dX[i]=dY[i]*g;
+    }
+}
+
+/* ================= BACKWARD erf / tanh / sigmoid ==========================
+   Derivees exactes des approximations rationnelles certifiees :
+   r(x) = cn*(x+c3*x^3)/(b0+b2*x^2)  =>
+   r'(x) = cn*[(1+3c3x^2)(b0+b2x^2) - (x+c3x^3)*2b2x] / (b0+b2x^2)^2
+   clamp [lo,hi] : derivee nulle hors bornes.                              */
+static void rat_backward(const double* dY,const double* x,double* out,
+                         long long n,
+                         double cn,double c3,double b0,double b2,
+                         double lo,double hi){
+    long long vec=n&~3LL;
+    __m256d vcn=_mm256_set1_pd(cn),vc3=_mm256_set1_pd(c3);
+    __m256d vb0=_mm256_set1_pd(b0),vb2=_mm256_set1_pd(b2);
+    __m256d vlo=_mm256_set1_pd(lo),vhi=_mm256_set1_pd(hi);
+    __m256d two=_mm256_set1_pd(2.0),three=_mm256_set1_pd(3.0);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=4){
+        __m256d vx=_mm256_loadu_pd(x+i);
+        __m256d vd=_mm256_loadu_pd(dY+i);
+        __m256d y=_mm256_max_pd(vlo,_mm256_min_pd(vhi,vx));
+        /* dans la zone clampee : derivee nulle */
+        __m256d inside=_mm256_and_pd(
+            _mm256_cmp_pd(vx,vlo,_CMP_GT_OQ),
+            _mm256_cmp_pd(vx,vhi,_CMP_LT_OQ));
+        __m256d x2=_mm256_mul_pd(y,y);
+        __m256d den=_mm256_add_pd(vb0,_mm256_mul_pd(vb2,x2));
+        __m256d num=_mm256_add_pd(y,_mm256_mul_pd(vc3,
+                    _mm256_mul_pd(y,x2)));
+        __m256d np_=_mm256_add_pd(_mm256_set1_pd(1.0),
+                          _mm256_mul_pd(three,_mm256_mul_pd(vc3,x2)));
+        __m256d dp=_mm256_mul_pd(two,_mm256_mul_pd(vb2,y));
+        __m256d g=_mm256_div_pd(
+            _mm256_sub_pd(_mm256_mul_pd(np_,den),_mm256_mul_pd(num,dp)),
+            _mm256_mul_pd(den,den));
+        /* masque : AND (pas MUL ! les bits du masque sont 0/all-ones) */
+        g=_mm256_and_pd(g,inside);
+        _mm256_storeu_pd(out+i,_mm256_mul_pd(vcn,
+            _mm256_mul_pd(vd,g)));
+    }
+    for(long long i=vec;i<n;i++){
+        double xi=x[i];
+        if(xi<=lo||xi>=hi){ out[i]=0.0; continue; }
+        double xc=xi<lo?lo:(xi>hi?hi:xi);
+        double x2=xc*xc;
+        double num=xc+c3*xc*x2;
+        double den=b0+b2*x2;
+        double np_=1.0+3.0*c3*x2;
+        double dp=2.0*b2*xc;
+        double g=(np_*den-num*dp)/(den*den);
+        out[i]=dY[i]*cn*g;
+    }
+}
+
+void spur_batch_erf_backward(const double* dY,const double* x,double* out,
+                             long long n){
+    rat_backward(dY,x,out,n,1.106774,0.034298,0.995,0.378089,-2.0,2.0);
+}
+void spur_batch_tanh_backward(const double* dY,const double* x,double* out,
+                              long long n){
+    rat_backward(dY,x,out,n,0.900021,0.053639,0.90122,0.343141,-3.0,3.0);
+}
+/* sigmoid = 0.5 + 0.5*tanh_a(x/2) => s' = 0.25*tanh_a'(x/2) */
+void spur_batch_sigmoid_backward(const double* dY,const double* x,
+                                 double* out,long long n){
+    /* implementation directe via tanh_backward sur x/2 */
+    {
+        double* xs=(double*)malloc((size_t)n*sizeof(double));
+        double* g =(double*)malloc((size_t)n*sizeof(double));
+        if(!xs||!g){ free(xs); free(g);
+            for(long long i=0;i<n;i++) out[i]=0.0; return; }
+        for(long long i=0;i<n;i++) xs[i]=0.5*x[i];
+        spur_batch_tanh_backward(dY,xs,g,n);
+        for(long long i=0;i<n;i++) out[i]=0.25*g[i];
+        free(xs); free(g);
+    }
+}
+
+/* ================= FLOAT32 — 8 lanes/vector, ~x2 debit ==================== */
+void spur_batch_gelu_f32(const float* x,float* out,long long n){
+    long long vec=n&~7LL;
+    __m256 c306=_mm256_set1_ps(0.306923f),c501=_mm256_set1_ps(0.501f);
+    __m256 cm=_mm256_set1_ps(1.002f),z=_mm256_setzero_ps();
+    __m256 ck=_mm256_set1_ps(0.997729f),cb=_mm256_set1_ps(-0.004004f);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=8){
+        __m256 vx=_mm256_loadu_ps(x+i);
+        __m256 u=_mm256_fmadd_ps(c306,vx,c501);
+        u=_mm256_max_ps(u,z); u=_mm256_min_ps(u,cm);
+        __m256 r=_mm256_mul_ps(vx,u);
+        _mm256_storeu_ps(out+i,_mm256_add_ps(_mm256_mul_ps(r,ck),cb));
+    }
+    for(long long i=vec;i<n;i++){
+        float u=0.306923f*x[i]+0.501f;
+        u=fminf(fmaxf(u,0.0f),1.002f);
+        out[i]=0.997729f*(x[i]*u)-0.004004f;
+    }
+}
+
+void spur_matmul_nt_f32(const float* A,const float* B,float* C,
+                        long long m,long long k,long long n){
+    memset(C,0,(size_t)m*n*sizeof(float));
+    for(long long kb=0;kb<k;kb+=MM_KC){
+        const long long ke=(kb+MM_KC<k)?kb+MM_KC:k;
+        for(long long jb=0;jb<n;jb+=MM_NC){
+            const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+            #pragma omp parallel for schedule(static)
+            for(long long i0=0;i0<m/8;i0++){   /* 8 lignes f32 par bloc */
+                const float* ar=A+(size_t)i0*8*k;
+                float* cr=C+(size_t)i0*8*n;
+                for(long long j=jb;j<je;j++){
+                    const float* br=B+(size_t)j*k;
+                    __m256 v0=_mm256_setzero_ps(),v1=_mm256_setzero_ps();
+                    __m256 v2=_mm256_setzero_ps(),v3=_mm256_setzero_ps();
+                    __m256 v4=_mm256_setzero_ps(),v5=_mm256_setzero_ps();
+                    __m256 v6=_mm256_setzero_ps(),v7=_mm256_setzero_ps();
+                    long long q=kb;
+                    for(;q+7<ke;q+=8){
+                        __m256 av0=_mm256_loadu_ps(ar+q);
+                        __m256 av1=_mm256_loadu_ps(ar+k+q);
+                        __m256 av2=_mm256_loadu_ps(ar+2*k+q);
+                        __m256 av3=_mm256_loadu_ps(ar+3*k+q);
+                        __m256 av4=_mm256_loadu_ps(ar+4*k+q);
+                        __m256 av5=_mm256_loadu_ps(ar+5*k+q);
+                        __m256 av6=_mm256_loadu_ps(ar+6*k+q);
+                        __m256 av7=_mm256_loadu_ps(ar+7*k+q);
+                        __m256 bv=_mm256_loadu_ps(br+q);
+                        v0=_mm256_fmadd_ps(av0,bv,v0);
+                        v1=_mm256_fmadd_ps(av1,bv,v1);
+                        v2=_mm256_fmadd_ps(av2,bv,v2);
+                        v3=_mm256_fmadd_ps(av3,bv,v3);
+                        v4=_mm256_fmadd_ps(av4,bv,v4);
+                        v5=_mm256_fmadd_ps(av5,bv,v5);
+                        v6=_mm256_fmadd_ps(av6,bv,v6);
+                        v7=_mm256_fmadd_ps(av7,bv,v7);
+                    }
+                    /* reduction horizontale f32 */
+                    cr[j]     +=hsum8(v0); cr[n+j]    +=hsum8(v1);
+                    cr[2*n+j] +=hsum8(v2); cr[3*n+j]  +=hsum8(v3);
+                    cr[4*n+j] +=hsum8(v4); cr[5*n+j]  +=hsum8(v5);
+                    cr[6*n+j] +=hsum8(v6); cr[7*n+j]  +=hsum8(v7);
+                }
+            }
+            #pragma omp parallel for schedule(static)
+            for(long long i=(m/8)*8;i<m;i++){
+                const float* xr=A+(size_t)i*k;
+                float* tr=C+(size_t)i*n;
+                for(long long j=jb;j<je;j++){
+                    const float* wr=B+(size_t)j*k;
+                    __m256 acc=_mm256_setzero_ps();
+                    long long q=kb;
+                    for(;q+7<ke;q+=8)
+                        acc=_mm256_fmadd_ps(_mm256_loadu_ps(xr+q),
+                                            _mm256_loadu_ps(wr+q),acc);
+                    float s=hsum8(acc);
+                    for(;q<ke;q++) s+=xr[q]*wr[q];
+                    tr[j]+=s;
+                }
+            }
+        }
+    }
+}
+
+void spur_matmul_nt_gelu_f32(const float* A,const float* B,
+                             const float* bias,float* C,
+                             long long m,long long k,long long n){
+    for(long long jb=0;jb<n;jb+=MM_NC){
+        const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+        #pragma omp parallel for schedule(static)
+        for(long long i0=0;i0<m/8;i0++){
+            const float* ar=A+(size_t)i0*8*k;
+            float* cr=C+(size_t)i0*8*n;
+            for(long long j=jb;j<je;j++){
+                const float* br=B+(size_t)j*k;
+                float biasj=bias?bias[j]:0.0f;
+                __m256 acc=_mm256_setzero_ps();
+                long long q=0;
+                for(;q+7<k;q+=8)
+                    acc=_mm256_fmadd_ps(_mm256_loadu_ps(ar+q),
+                                        _mm256_loadu_ps(br+q),acc);
+                float s=hsum8(acc);
+                for(;q<k;q++) s+=ar[q]*br[q];
+                cr[j]=gelu_f32_scalar(s+biasj);
+            }
+        }
+        #pragma omp parallel for schedule(static)
+        for(long long i=(m/8)*8;i<m;i++){
+            const float* xr=A+(size_t)i*k;
+            float* tr=C+(size_t)i*n;
+            for(long long j=jb;j<je;j++){
+                const float* wr=B+(size_t)j*k;
+                __m256 acc=_mm256_setzero_ps();
+                long long q=0;
+                for(;q+7<k;q+=8)
+                    acc=_mm256_fmadd_ps(_mm256_loadu_ps(xr+q),
+                                        _mm256_loadu_ps(wr+q),acc);
+                float s=hsum8(acc);
+                for(;q<k;q++) s+=xr[q]*wr[q];
+                tr[j]=gelu_f32_scalar(s+(bias?bias[j]:0.0f));
+            }
+        }
+    }
+}
+
+void spur_batch_gelu_backward_f32(const float* dY,const float* x,float* dX,
+                                  long long n){
+    long long vec=n&~7LL;
+    const float c306=0.306923f,c5=0.501f,cm=1.002f,ck=0.997729f;
+    __m256 vc=_mm256_set1_ps(c306),vb=_mm256_set1_ps(c5);
+    __m256 vm=_mm256_set1_ps(cm),vk=_mm256_set1_ps(ck);
+    __m256 vz=_mm256_setzero_ps();
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=8){
+        __m256 vx=_mm256_loadu_ps(x+i);
+        __m256 vd=_mm256_loadu_ps(dY+i);
+        __m256 u=_mm256_fmadd_ps(vc,vx,vb);
+        __m256 mi=_mm256_and_ps(
+            _mm256_cmp_ps(u,vz,_CMP_GT_OQ),
+            _mm256_cmp_ps(u,vm,_CMP_LT_OQ));
+        __m256 uc=_mm256_max_ps(vz,_mm256_min_ps(vm,u));
+        __m256 g=_mm256_mul_ps(vk,
+            _mm256_add_ps(uc,_mm256_and_ps(_mm256_mul_ps(vx,vc),mi)));
+        _mm256_storeu_ps(dX+i,_mm256_mul_ps(vd,g));
+    }
+    for(long long i=vec;i<n;i++){
+        float u=c306*x[i]+c5;
+        float g=(u<=0.0f)?0.0f:((u>=cm)?ck*cm:ck*(u+c306*x[i]));
         dX[i]=dY[i]*g;
     }
 }

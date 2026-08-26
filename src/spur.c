@@ -27,9 +27,14 @@ double spur_k_lse2(double a,double b){ return fmax(a,b); }
 #pragma GCC reset_options
 
 /* ================= ??tat =================================================== */
-#define MAXK 8
-static struct { unsigned char* code; size_t len; double* pool; } K[MAXK];
+#define MAXK 32
+static struct { unsigned char* code; size_t len; double* pool; int used; } K[MAXK];
 static int nk = 0;
+/* Thread-safety : exec est reentrant (code pur), seuls les BUILDS
+   partagent jb/jlen/jpool/nfx -> serialization via SRWLOCK.
+   spur_free() marque le slot reutilisable (pas de decalage de handles). */
+static SRWLOCK g_jit_lock = SRWLOCK_INIT;
+static int g_slot = -1;
 
 static double *jpool; static int jpooln;
 static unsigned char *jb; static size_t jlen;
@@ -203,7 +208,13 @@ static void emit_op(const SpurIns* I){
 static SpurIns g_body[256];
 
 int spur_jit_build(const SpurIns* prog,int n){
-    if(n<1||n>256||nk>=MAXK) return -1;
+    AcquireSRWLockExclusive(&g_jit_lock);
+    if(n<1||n>256){ ReleaseSRWLockExclusive(&g_jit_lock); return -1; }
+    { int slot=-1;
+      for(int s=0;s<nk;s++) if(!K[s].used){ slot=s; break; }
+      if(slot<0 && nk<MAXK) slot=nk++;
+      if(slot<0){ ReleaseSRWLockExclusive(&g_jit_lock); return -1; }
+      g_slot=slot; }
     jb=VirtualAlloc(NULL,16384,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
     if(!jb) return -1;
     double* pl=(double*)calloc(64,sizeof(double));
@@ -234,11 +245,13 @@ int spur_jit_build(const SpurIns* prog,int n){
     }
         DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);
     FlushInstructionCache(GetCurrentProcess(),jb,(DWORD)jlen);
-    K[nk].code=jb; K[nk].len=jlen; K[nk].pool=pl;
-    return nk++;
+    K[g_slot].code=jb; K[g_slot].len=jlen; K[g_slot].pool=pl;
+    K[g_slot].used=1;
+    ReleaseSRWLockExclusive(&g_jit_lock);
+    return g_slot;
 }
 double spur_exec(int h, const double* regs8){
-    if(h<0||h>=nk) return 0.0/0.0;
+    if(h<0||h>=nk||!K[h].used) return 0.0/0.0;
     return ((double(*)(void))K[h].code)();
 }
 
@@ -248,34 +261,49 @@ double spur_exec(int h, const double* regs8){
    par tests/test_encoding.c (17 assertions + execution reelle).
    Pieges REX/SIB couverts : [r12] exige SIB(base=100+B), [r13] en mod00
    serait RIP-relatif -> forme disp8, store SIB base=110(r14) pas 100.      */
-static void m_ld(int xr,int which){          /* xr <- [r12] ou [r13+0]       */
-    unsigned rex=(unsigned)(0x41|(((xr)&8)>>1));
+static void m_ld(int xr,int which){ /* xr <- ins[which] ; r12,r13,rsi,rdi */
+    unsigned rex=(unsigned)(0x40|(((xr)&8)>>1));
+    if(which==0||which==1) rex|=0x01;   /* B : bases r12/r13 >= 8          */
     je8(0xF2); je8((unsigned char)rex); je8(0x0F); je8(0x10);
-    if(which==0) je8((unsigned char)(0x04|((xr&7)<<3))), je8(0x24);
-    else         je8((unsigned char)(0x45|((xr&7)<<3))), je8(0x00);
+    switch(which){
+    case 0:  je8((unsigned char)(0x04|((xr&7)<<3))); je8(0x24); break;
+    case 1:  je8((unsigned char)(0x45|((xr&7)<<3))); je8(0x00); break;
+    case 2:  je8((unsigned char)(0x06|((xr&7)<<3))); break;
+    default: je8((unsigned char)(0x07|((xr&7)<<3))); break;
+    }
 }
 static void m_st(int xr){                    /* [r14] <- xr                  */
     je8(0xF2); je8((unsigned char)(0x41|(((xr)&8)>>1))); je8(0x0F); je8(0x11);
     je8((unsigned char)(0x04|((xr&7)<<3))); je8(0x26);
 }
 int spur_map_build(const SpurIns* body,int n){
-    if(n<1||n>256||nk>=MAXK) return -1;
+    AcquireSRWLockExclusive(&g_jit_lock);
+    if(n<1||n>256){ ReleaseSRWLockExclusive(&g_jit_lock); return -1; }
+    { int slot=-1;
+      for(int s=0;s<nk;s++) if(!K[s].used){ slot=s; break; }
+      if(slot<0 && nk<MAXK) slot=nk++;
+      if(slot<0){ ReleaseSRWLockExclusive(&g_jit_lock); return -1; }
+      g_slot=slot; }
     jb=VirtualAlloc(NULL,16384,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
     if(!jb) return -1;
     double* pl=(double*)calloc(64,sizeof(double));
     if(!pl) return -1;
     jpool=pl; jlen=0; nfx=0; jpooln=POOL_CONST0;
     emit_prologue(0);
-    /* prologue map : recopie des args vers les pointeurs dedies */
-    je8(0x49);je8(0x89);je8(0xCC);               /* mov r12,rcx  (rex 49!)   */
-    je8(0x49);je8(0x89);je8(0xD5);               /* mov r13,rdx              */
-    je8(0x4D);je8(0x89);je8(0xC6);               /* mov r14,r8               */
-    je8(0x4D);je8(0x89);je8(0xCF);               /* mov r15,r9               */
+    /* args Win64 : rcx=ins[] rdx=out r8=count ; sauvegardes supplementaires */
+    je8(0x56);                                   /* push rsi                 */
+    je8(0x57);                                   /* push rdi                 */
+    je8(0x4C);je8(0x8B);je8(0x21);               /* mov r12,[rcx] (rex 4C : R=1!) */
+    je8(0x4C);je8(0x8B);je8(0x69);je8(0x08);     /* mov r13,[rcx+8] (ins[1]) */
+    je8(0x49);je8(0x89);je8(0xD6);               /* mov r14,rdx     (out)    */
+    je8(0x48);je8(0x8B);je8(0x71);je8(0x10);     /* mov rsi,[rcx+16](ins[2]) */
+    je8(0x48);je8(0x8B);je8(0x79);je8(0x18);     /* mov rdi,[rcx+24](ins[3]) */
+    je8(0x4D);je8(0x89);je8(0xCF);               /* mov r15,r8      (count)  */
     size_t body_off=jlen;
     for(int i=0;i<n;i++){
         const SpurIns* I=&body[i];
         switch(I->op){
-        case MP_LD: m_ld(XR(I->dst),I->a); break;    /* a=0|1 choix entree   */
+        case MP_LD: m_ld(XR(I->dst),I->a); break;    /* a=0..3 choix entree */
         case MP_ST: m_st(XR(I->a)); break;
         default: emit_op(I); break;
         }
@@ -284,8 +312,12 @@ int spur_map_build(const SpurIns* body,int n){
     je8(0x49);je8(0x83);je8(0xC4);je8(0x08);     /* add r12,8                */
     je8(0x49);je8(0x83);je8(0xC5);je8(0x08);     /* add r13,8                */
     je8(0x49);je8(0x83);je8(0xC6);je8(0x08);     /* add r14,8                */
+    je8(0x48);je8(0x83);je8(0xC6);je8(0x08);     /* add rsi,8                */
+    je8(0x48);je8(0x83);je8(0xC7);je8(0x08);     /* add rdi,8                */
     je8(0x49);je8(0xFF);je8(0xCF);               /* dec r15                  */
     je8(0x0F);je8(0x85); fx_rel(jlen,body_off); jlen+=4;  /* jnz corps       */
+    je8(0x5F);                                   /* pop rdi                  */
+    je8(0x5E);                                   /* pop rsi                  */
     emit_epilogue_ret_acc();
     for(int k=0;k<nfx;k++){
         long long tgt=(long long)(uintptr_t)(jb+fxc[k].off);
@@ -294,13 +326,31 @@ int spur_map_build(const SpurIns* body,int n){
     }
     DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);
     FlushInstructionCache(GetCurrentProcess(),jb,(DWORD)jlen);
-    K[nk].code=jb; K[nk].len=jlen; K[nk].pool=pl;
-    return nk++;
+    K[g_slot].code=jb; K[g_slot].len=jlen; K[g_slot].pool=pl;
+    K[g_slot].used=1;
+    ReleaseSRWLockExclusive(&g_jit_lock);
+    return g_slot;
 }
-void spur_map_exec(int handle,const double* a0,const double* a1,double* out,long long count){
-    if(handle<0||handle>=nk||count<1) return;
-    ((void(*)(const double*,const double*,double*,long long))K[handle].code)
-        (a0,a1,out,count);
+
+void spur_map_exec(int handle,const double* const* ins,double* out,
+                   long long count){
+    if(handle<0||handle>=nk||!K[handle].used||count<1) return;
+    ((void(*)(const double* const*,double*,long long))K[handle].code)
+        (ins,out,count);
+}
+
+/* Libere un handle JIT (kernels boucle ET map). Slot reutilisable ;
+   les handles existants ne changent pas de valeur. */
+void spur_free(int handle){
+    if(handle<0||handle>=nk||!K[handle].used) return;
+    AcquireSRWLockExclusive(&g_jit_lock);
+    if(K[handle].used){
+        VirtualFree(K[handle].code,0,MEM_RELEASE);
+        free(K[handle].pool);
+        K[handle].code=NULL; K[handle].pool=NULL;
+        K[handle].used=0;
+    }
+    ReleaseSRWLockExclusive(&g_jit_lock);
 }
 
 

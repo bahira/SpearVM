@@ -1,7 +1,12 @@
 # SpearVM
 
 **Accélérateur mathématique SIMD** — noyaux transcendantals vectorisés AVX2,
-précision certifiée, appelables depuis Python/C.
+précision certifiée, matmul tuilé, couche FFN fusionnée avec backprop,
+mini-JIT x64 pour programmes élément-par-élément. Python/C.
+
+```bash
+pip install spur-math
+```
 
 ## Speedups mesurés (4M éléments, OpenMP multi-cœur)
 
@@ -10,6 +15,18 @@ précision certifiée, appelables depuis Python/C.
 | GELU | 120 ms | 8 ms | **×15.0** |
 | ERF | 306 ms | 9 ms | **×34.0** |
 | TANH | 234 ms | 9 ms | **×26.0** |
+
+## v0.4 — fp32 ×2, backprop complète, map 4 entrées
+
+- **float32 natif** : `matmul_nt`, `matmul_nt_gelu`, `gelu`, `gelu_backward`
+  acceptent float32 (8 lanes/vector) → **×2.00 vs f64** mesuré
+  (13.5 → 26.8 GFLOPS @1024³). Dispatch automatique sur le dtype numpy.
+- **Backward erf/tanh/sigmoid** : gradients exacts des approximations
+  rationnelles, gradcheck ~1.6e-09. Training complet possible :
+  `erf_backward`, `tanh_backward`, `sigmoid_backward`.
+- **Map kernel 4 entrées** : `out[i] = F(a[i], b[i], c[i], d[i])` via
+  tableau de pointeurs ; `spur_free(handle)` + slots réutilisables ;
+  builds sérialisés (SRWLOCK) — exec réentrant.
 
 ## Matmul (bench_mm)
 

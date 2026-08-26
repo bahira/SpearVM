@@ -33,8 +33,10 @@ MP_LD, MP_ST, SIGMOID = 18, 19, 20
 _dll.spur_map_build.restype = ctypes.c_int
 _dll.spur_map_build.argtypes = [ctypes.POINTER(SpurIns), ctypes.c_int]
 _dll.spur_map_exec.restype = None
-_dll.spur_map_exec.argtypes = [ctypes.c_int] + [ctypes.c_void_p] * 3 + [
-    ctypes.c_longlong]
+_dll.spur_map_exec.argtypes = [ctypes.c_int, ctypes.c_void_p,
+                               ctypes.c_void_p, ctypes.c_longlong]
+_dll.spur_free.restype = None
+_dll.spur_free.argtypes = [ctypes.c_int]
 
 
 def compile_map(prog):
@@ -48,9 +50,15 @@ def compile_map(prog):
     return h
 
 
-def run_map(handle, in0, in1, out):
-    """out[i] = F(in0[i], in1[i]) element-wise. in1 peut etre in0."""
-    n = out.size
-    _dll.spur_map_exec(handle,
-                       in0.ctypes.data, in1.ctypes.data,
-                       out.ctypes.data, n)
+def run_map(handle, ins, out):
+    """out[i] = F(ins[0][i], ..., ins[3][i]). ins : sequence de 1 a 4 arrays."""
+    arrays = [np.ascontiguousarray(a, dtype=np.float64) for a in ins]
+    ptrs = (ctypes.c_void_p * 4)()
+    for i, a in enumerate(arrays[:4]):
+        ptrs[i] = a.ctypes.data
+    _dll.spur_map_exec(handle, ctypes.cast(ptrs, ctypes.c_void_p),
+                       out.ctypes.data, out.size)
+
+
+def free(handle):
+    _dll.spur_free(handle)

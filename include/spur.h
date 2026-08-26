@@ -32,11 +32,14 @@ int    spur_jit_build(const SpurIns* prog, int n);         /* -> handle */
 double spur_exec(int handle, const double* regs8);          /* -> acc, regs in/out */
 
 /* ---- Kernel map element-wise ---- */
-/* Corps sans boucle : MP_LD dst=a (charge in[a][i], a=0|1) ; MP_ST a=v_src.
-   Deux tableaux d'entree max (a=0 -> premier tableau, a=1 -> second).      */
+/* Corps sans boucle : MP_LD dst=a (charge ins[a][i], a=0..3) ; MP_ST a=v_src.
+   Jusqu'a 4 tableaux d'entree (ins[] = tableau de pointeurs).              */
 int  spur_map_build(const SpurIns* body, int n);
-void spur_map_exec(int handle, const double* a0, const double* a1,
-                   double* out, long long count);   /* a1 peut etre NULL */
+void spur_map_exec(int handle, const double* const* ins,
+                   double* out, long long count);
+
+/* Libere un handle JIT (boucle ou map). Slot reutilisable. */
+void spur_free(int handle);
 
 /* ---- Noyaux directs ---- */
 double spur_k_gelu(double x);

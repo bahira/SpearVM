@@ -63,61 +63,149 @@ _matmul_nt = _bind_mm("spur_matmul_nt")
 _matmul_nt_gelu = _bind_mm("spur_matmul_nt_gelu", with_bias=True)
 _gelu_backward = _bind_bw("spur_batch_gelu_backward")
 
+_PF = ctypes.POINTER(ctypes.c_float)
+_batch_gelu_f32 = _bind("spur_batch_gelu_f32")
+
+_matmul_nt_f32 = getattr(_dll, "spur_matmul_nt_f32")
+_matmul_nt_f32.argtypes = [_PF, _PF, _PF] + [ctypes.c_longlong] * 3
+_matmul_nt_f32.restype = None
+
+_matmul_nt_gelu_f32 = getattr(_dll, "spur_matmul_nt_gelu_f32")
+_matmul_nt_gelu_f32.argtypes = [_PF, _PF, ctypes.c_void_p, _PF] + [
+    ctypes.c_longlong] * 3
+_matmul_nt_gelu_f32.restype = None
+
+_gelu_backward_f32 = getattr(_dll, "spur_batch_gelu_backward_f32")
+_gelu_backward_f32.argtypes = [_PF, _PF, _PF, ctypes.c_longlong]
+_gelu_backward_f32.restype = None
+
+for _n in ("spur_batch_erf_backward", "spur_batch_tanh_backward",
+           "spur_batch_sigmoid_backward"):
+    _f = getattr(_dll, _n)
+    _f.argtypes = [ctypes.POINTER(ctypes.c_double)] * 3 + [ctypes.c_longlong]
+    _f.restype = None
+_erf_backward = _dll.spur_batch_erf_backward
+_tanh_backward = _dll.spur_batch_tanh_backward
+_sigmoid_backward = _dll.spur_batch_sigmoid_backward
+
 
 def matmul_nt(a, b):
-    """C = A . B^T. a: (m,k), b: (n,k) -> c: (m,n). Convention BLAS NT."""
-    a = np.ascontiguousarray(a, dtype=np.float64)
-    b = np.ascontiguousarray(b, dtype=np.float64)
+    """C = A . B^T. a:(m,k), b:(n,k) -> (m,n). float32 ou float64."""
+    dt = np.float32 if np.asarray(a).dtype == np.float32 else np.float64
+    a = np.ascontiguousarray(a, dtype=dt)
+    b = np.ascontiguousarray(b, dtype=dt)
     m, k = a.shape
     n = b.shape[0]
-    c = np.zeros((m, n))
-    _matmul_nt(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-               b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-               c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-               m, k, n)
+    c = np.zeros((m, n), dtype=dt)
+    if dt == np.float32:
+        _matmul_nt_f32(a.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                       b.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                       c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                       m, k, n)
+    else:
+        _matmul_nt(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                   b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                   c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                   m, k, n)
     return c
 
 
 def matmul_nt_gelu(a, b, bias=None):
-    """C = gelu(A . B^T + bias) fusionne. a:(m,k) b:(n,k) bias:(n,) -> (m,n).
-    bias=None accepte (retro-compatible)."""
-    a = np.ascontiguousarray(a, dtype=np.float64)
-    b = np.ascontiguousarray(b, dtype=np.float64)
+    """C = gelu(A . B^T + bias) fusionne. float32 ou float64. bias:(n,) ou None."""
+    dt = np.float32 if np.asarray(a).dtype == np.float32 else np.float64
+    a = np.ascontiguousarray(a, dtype=dt)
+    b = np.ascontiguousarray(b, dtype=dt)
     m, k = a.shape
     n = b.shape[0]
-    c = np.zeros((m, n))
+    c = np.zeros((m, n), dtype=dt)
     bp = None
     if bias is not None:
-        bias = np.ascontiguousarray(bias, dtype=np.float64)
+        bias = np.ascontiguousarray(bias, dtype=dt)
         assert bias.shape == (n,), f"bias attendu ({n},), recu {bias.shape}"
         bp = bias.ctypes.data_as(ctypes.c_void_p)
-    _matmul_nt_gelu(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                    b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                    bp,
-                    c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                    m, k, n)
+    if dt == np.float32:
+        _matmul_nt_gelu_f32(a.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                            b.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                            bp,
+                            c.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                            m, k, n)
+    else:
+        _matmul_nt_gelu(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                        b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                        bp,
+                        c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                        m, k, n)
     return c
 
 
 def gelu_backward(dY, x):
-    """dX = dY * gelu'(x) — gradient exact de la gelu approximee (training)."""
+    """dX = dY * gelu'(x). float32 ou float64."""
+    dt = np.float32 if np.asarray(x).dtype == np.float32 else np.float64
+    dYc = np.ascontiguousarray(dY, dtype=dt)
+    xc = np.ascontiguousarray(x, dtype=dt)
+    out = np.zeros_like(xc)
+    if dt == np.float32:
+        _gelu_backward_f32(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           xc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           xc.size)
+    else:
+        _gelu_backward(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                       xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                       out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                       xc.size)
+    return out
+
+
+def erf_backward(dY, x):
+    """dX = dY * erf_approx'(x)."""
     dYc = np.ascontiguousarray(dY, dtype=np.float64)
     xc = np.ascontiguousarray(x, dtype=np.float64)
     out = np.zeros_like(xc)
-    _gelu_backward(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+    _erf_backward(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                  xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                  out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                  xc.size)
+    return out
+
+
+def tanh_backward(dY, x):
+    """dX = dY * tanh_approx'(x)."""
+    dYc = np.ascontiguousarray(dY, dtype=np.float64)
+    xc = np.ascontiguousarray(x, dtype=np.float64)
+    out = np.zeros_like(xc)
+    _tanh_backward(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                    xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                    out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                    xc.size)
     return out
 
 
-def gelu(x):
-    """GELU approximatif AVX2. Erreur max 0.079 sur [-2, 2], sature proprement au-dela."""
+def sigmoid_backward(dY, x):
+    """dX = dY * sigmoid_approx'(x)."""
+    dYc = np.ascontiguousarray(dY, dtype=np.float64)
     xc = np.ascontiguousarray(x, dtype=np.float64)
     out = np.zeros_like(xc)
-    fn = _batch_gelu
-    fn(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-       out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), xc.size)
+    _sigmoid_backward(dYc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                      xc.size)
+    return out
+
+
+def gelu(x):
+    """GELU approximatif AVX2. Erreur max 0.079 sur [-2,2] (f32: +1e-6 bruit)."""
+    if np.asarray(x).dtype == np.float32:
+        xc = np.ascontiguousarray(x, dtype=np.float32)
+        out = np.zeros_like(xc)
+        _batch_gelu_f32(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                        out.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                        xc.size)
+        return out
+    xc = np.ascontiguousarray(x, dtype=np.float64)
+    out = np.zeros_like(xc)
+    _batch_gelu(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), xc.size)
     return out
 
 
