@@ -55,21 +55,27 @@ static void je64(unsigned long long v){ memcpy(jb+jlen,&v,8); jlen+=8; }
 static void fx_rel(size_t pos, size_t off){ Fix f={pos,off}; fxc[nfx++]=f; }
 
 static int const_slot(double v){
-    const uint64_t bits = (uint64_t)v;
+    /* BIT PATTERN, pas la valeur : (uint64_t)v convertirait 42.0 en entier 42,
+       relu comme double = denormal -> tous les consts fausses silencieusement */
+    uint64_t bits; memcpy(&bits,&v,8);
     uint64_t* q = (uint64_t*)jpool;
     for(int i=POOL_CONST0;i<jpooln;i++)
         if(q[i]==bits) return i;
     if(jpooln>=48) return -1;
-    q[jpooln]=v; return jpooln++;
+    q[jpooln]=bits; return jpooln++;
 }
 
-/* SSE mem [rbx+idx*8] : op {10=load,11=store,58=add,59=mul,5A=sub,5D=min,5E=div,5F=max} */
+/* SSE load constante pool : version ABSOLUE (movabs rax,jpool ; movsd xr,[rax+d]).
+   Independante de rbx et des registres d'arguments Win64 (rcx/rdx/r8/r9),
+   donc identique dans les contextes boucle ET map.                          */
 static void e_f2mem(int op,int xr,int idx,int store){
     unsigned rex=(unsigned)(0x40|(((xr)&8)>>1));
     int d=idx*8;
+    (void)store;
+    je8(0x48); je8(0xB8); je64((unsigned long long)(uintptr_t)jpool);
     je8(0xF2); je8((unsigned char)rex); je8(0x0F); je8(op);
-    if(d>=-128&&d<128){ je8((unsigned char)(0x44|(((xr)&7)<<3))); je8(0x23); je8((unsigned char)d); }
-    else { je8((unsigned char)(0x84|(((xr)&7)<<3))); je8(0x23); je32((unsigned)d); }
+    if(d>=-128&&d<128){ je8((unsigned char)(0x40|(((xr)&7)<<3))); je8((unsigned char)d); } /* [rax+d8]  */
+    else { je8((unsigned char)(0x80|(((xr)&7)<<3))); je32((unsigned)d); }                  /* [rax+d32] */
 }
 static void e_movsd_pool(int xr,int idx){ e_f2mem(0x10,xr,idx,0); }
 
@@ -226,7 +232,7 @@ int spur_jit_build(const SpurIns* prog,int n){
         long long nxt=(long long)(uintptr_t)(jb+fxc[k].pos+4);
         *(int*)(jb+fxc[k].pos)=(int)(tgt-nxt);
     }
-        DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);{ FILE* fp=fopen("jit_dll.bin","wb"); fwrite(jb,1,jlen,fp); fclose(fp); }
+        DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);
     FlushInstructionCache(GetCurrentProcess(),jb,(DWORD)jlen);
     K[nk].code=jb; K[nk].len=jlen; K[nk].pool=pl;
     return nk++;
@@ -237,8 +243,21 @@ double spur_exec(int h, const double* regs8){
 }
 
 /* ================= Kernel map element-wise (tableaux) ===================== */
-/* Prologue map : r12=in0, r13=in1, r14=out, r15d=count.
-   Corps : ops element-wise ; avance de 8 octets les pointeurs utilises.     */
+/* Y = F(in0[i], in1[i]) — pointeurs passes en ARGS DIRECTS Win64 :
+   rcx=in0 rdx=in1 r8=out r9=count. Encodages valides octet par octet
+   par tests/test_encoding.c (17 assertions + execution reelle).
+   Pieges REX/SIB couverts : [r12] exige SIB(base=100+B), [r13] en mod00
+   serait RIP-relatif -> forme disp8, store SIB base=110(r14) pas 100.      */
+static void m_ld(int xr,int which){          /* xr <- [r12] ou [r13+0]       */
+    unsigned rex=(unsigned)(0x41|(((xr)&8)>>1));
+    je8(0xF2); je8((unsigned char)rex); je8(0x0F); je8(0x10);
+    if(which==0) je8((unsigned char)(0x04|((xr&7)<<3))), je8(0x24);
+    else         je8((unsigned char)(0x45|((xr&7)<<3))), je8(0x00);
+}
+static void m_st(int xr){                    /* [r14] <- xr                  */
+    je8(0xF2); je8((unsigned char)(0x41|(((xr)&8)>>1))); je8(0x0F); je8(0x11);
+    je8((unsigned char)(0x04|((xr&7)<<3))); je8(0x26);
+}
 int spur_map_build(const SpurIns* body,int n){
     if(n<1||n>256||nk>=MAXK) return -1;
     jb=VirtualAlloc(NULL,16384,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
@@ -246,49 +265,42 @@ int spur_map_build(const SpurIns* body,int n){
     double* pl=(double*)calloc(64,sizeof(double));
     if(!pl) return -1;
     jpool=pl; jlen=0; nfx=0; jpooln=POOL_CONST0;
-    emit_prologue(1);
+    emit_prologue(0);
+    /* prologue map : recopie des args vers les pointeurs dedies */
+    je8(0x49);je8(0x89);je8(0xCC);               /* mov r12,rcx  (rex 49!)   */
+    je8(0x49);je8(0x89);je8(0xD5);               /* mov r13,rdx              */
+    je8(0x4D);je8(0x89);je8(0xC6);               /* mov r14,r8               */
+    je8(0x4D);je8(0x89);je8(0xCF);               /* mov r15,r9               */
     size_t body_off=jlen;
     for(int i=0;i<n;i++){
         const SpurIns* I=&body[i];
         switch(I->op){
-        case MP_LD: {   /* v(dst) <- [r12] : charge l'element courant de in0 */
-            int xr=XR(I->dst);
-            je8(0xF2); je8((unsigned char)(0x41|(((xr)&8)>>1)));
-            je8(0x0F); je8(0x10);
-            je8((unsigned char)(0x04|((xr&7)<<3))); je8(0x24);
-        } break;
-        case MP_ST: {   /* [r14] <- v(a) : ecrit l'element courant           */
-            int xr=XR(I->a);
-            je8(0xF2); je8((unsigned char)(0x41|(((xr)&8)>>1)|(((14)&8)>>3)));
-            je8(0x0F); je8(0x11);
-            je8((unsigned char)(0x04|((xr&7)<<3))); je8(0x26);
-        } break;
+        case MP_LD: m_ld(XR(I->dst),I->a); break;    /* a=0|1 choix entree   */
+        case MP_ST: m_st(XR(I->a)); break;
         default: emit_op(I); break;
         }
     }
-    /* avance des pointeurs utilises : in0(+r12), in1(+r13), out(+r14) */
-    je8(0x49);je8(0xFF);je8(0xC7);                 /* inc r15 (index element)      */
-    je8(0x44);je8(0x3B);je8(0xBB);je8(0x98);je8(0x01);je8(0x00);je8(0x00); /* cmp r15d,[rbx+408] */
-    je8(0x0F);je8(0x8C); fx_rel(jlen,body_off); jlen+=4; /* jl body                */
+    /* queue : avance les 3 pointeurs, decremente, boucle */
+    je8(0x49);je8(0x83);je8(0xC4);je8(0x08);     /* add r12,8                */
+    je8(0x49);je8(0x83);je8(0xC5);je8(0x08);     /* add r13,8                */
+    je8(0x49);je8(0x83);je8(0xC6);je8(0x08);     /* add r14,8                */
+    je8(0x49);je8(0xFF);je8(0xCF);               /* dec r15                  */
+    je8(0x0F);je8(0x85); fx_rel(jlen,body_off); jlen+=4;  /* jnz corps       */
     emit_epilogue_ret_acc();
     for(int k=0;k<nfx;k++){
         long long tgt=(long long)(uintptr_t)(jb+fxc[k].off);
         long long nxt=(long long)(uintptr_t)(jb+fxc[k].pos+4);
         *(int*)(jb+fxc[k].pos)=(int)(tgt-nxt);
     }
-        DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);{ FILE* fp=fopen("jit_dll.bin","wb"); fwrite(jb,1,jlen,fp); fclose(fp); }
+    DWORD old; VirtualProtect(jb,jlen,PAGE_EXECUTE_READ,&old);
     FlushInstructionCache(GetCurrentProcess(),jb,(DWORD)jlen);
     K[nk].code=jb; K[nk].len=jlen; K[nk].pool=pl;
     return nk++;
 }
 void spur_map_exec(int handle,const double* a0,const double* a1,double* out,long long count){
     if(handle<0||handle>=nk||count<1) return;
-    double* pl=K[handle].pool;
-    memcpy(pl+POOL_IN0,&a0,sizeof(a0));
-    memcpy(pl+POOL_IN1,&a1,sizeof(a1));
-    memcpy(pl+POOL_OUT,&out,sizeof(out));
-    { int c=(int)count; memcpy((char*)pl+POOL_CNT*8,&c,sizeof(c)); }
-    ((double(*)(void))K[handle].code)();
+    ((void(*)(const double*,const double*,double*,long long))K[handle].code)
+        (a0,a1,out,count);
 }
 
 
