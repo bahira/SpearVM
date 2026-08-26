@@ -59,6 +59,22 @@ make              # DLL + tests
 gcc -O3 -march=native -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll
 ```
 
+## Installation Python
+
+```bash
+pip install spur-math          # apres publication PyPI
+```
+
+Ou depuis les sources (compile la DLL puis installe) :
+
+```bash
+python build_package.py --install
+```
+
+> Note : le wheel actuel embarque un binaire Windows x64. Sur Linux/macOS,
+> compilez le `.so` vous-meme avec la ligne gcc ci-dessus (le package affiche
+> la commande exacte si la lib manque).
+
 ## Usage Python
 
 ```python
