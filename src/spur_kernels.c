@@ -100,6 +100,10 @@ static inline double hs256(__m256d v){
     lo=_mm_add_pd(lo,hi);
     return _mm_cvtsd_f64(_mm_add_sd(lo,_mm_unpackhi_pd(lo,lo)));
 }
+/* gelu_s : formule evoluee SPEAR (superspear ledger "gelu", MSE 5.3e-4,
+   x6.57 vs GELU-tanh) -- https://github.com/bahira/superspear
+   Contrat datasheet : err <= 0.079 sur [-2,2], sature proprement au-dela
+   (err bornee ~0.002*|x|, verifie globalement jusqu'a +/-100). */
 static inline double gelu_s(double x){
     double u=0.306923*x+0.501;
     if(u<0.0)u=0.0; if(u>1.002)u=1.002;
