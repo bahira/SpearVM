@@ -10,7 +10,7 @@ int main(void){
         {MOVI,0,0,0,-1.0},
         {ADDI,0,0,0,0.000008},
         {GELU,0,0,1,0.6},
-        {SIGMOID,1,2,2,0},
+        {ERF,2,0,0,1.0},{MOVI,0,0,0,0},
         {ADD,3,1,2,0},
         {MULI,3,3,0,1.25},
         {TANH,3,3,0,1.0},
@@ -59,4 +59,6 @@ int main(void){
     for(int i=0;i<4;i++) fprintf(stderr,"  x=%.3f gain=%.1f -> %.6f\n",in0[i],in1[i],out[i]);
     return 0;
 }
+
+
 

@@ -97,6 +97,7 @@ static void emit_prologue(int with_arrays){
     je8(0x48);je8(0xBB);                           /* movabs rbx,pool             */
     je64((unsigned long long)(uintptr_t)jpool);
         je8(0x66);je8(0x45);je8(0x0F);je8(0xEF);je8(0xFF); /* pxor xmm15,xmm15        */
+    je8(0x66);je8(0x43);je8(0x0F);je8(0xEF);je8(0xF6); /* pxor xmm14,xmm14 (acc)  */
         je8(0x45);je8(0x31);je8(0xFF);                     /* xor r15d,r15d (index i) */
     if(with_arrays){
         je8(0x4C);je8(0x8B);je8(0xA3);je8(0x80);je8(0x01);je8(0x00);je8(0x00); /* mov r12,[rbx+384]   */
@@ -169,30 +170,20 @@ static void emit_op(const SpurIns* I){
     } break;
     case ACC:
         e_sd(0x58,ACC_XR,XR(I->a)); break;
-    case GELU:  emit_gelu_inline(I->dst,I->a,I->imm); break;
-    case ERF: {
-        e_movsd_pool(0,const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
-        rat_on_xmm0(0.034298,1.106774, 0.378089,0.995, -2,2);
-        e_sd(0x10,XR(I->dst),0);
-    } break;
-    case TANH: case TANHA: {
-        e_movsd_pool(0,const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
-        rat_on_xmm0(0.053639,0.900021, 0.343141,0.90122, -3,3);
-        e_sd(0x10,XR(I->dst),0);
-    } break;
-    case TANHS: {   /* dst = tanh(a-b) */
-        j_load(0,I->a); j_load(1,I->b); e_sd(0x5C,0,1);
-        rat_on_xmm0(0.053639,0.900021, 0.343141,0.90122, -3,3);
-        e_sd(0x10,XR(I->dst),0);
-    } break;
-    case SIGMOID: {
-        /* sigmoid(y) = 0.5 + 0.5*tanh(y/2), derive du tanh certifie */
-        e_movsd_pool(0,const_slot(0.5)); e_sd(0x59,0,XR(I->a));
-        rat_on_xmm0(0.053639,0.900021, 0.343141,0.90122, -3,3);
-        e_movsd_pool(1,const_slot(0.5)); e_sd(0x59,0,1);
-        e_movsd_pool(1,const_slot(0.5)); e_sd(0x58,0,1);
-        e_sd(0x10,XR(I->dst),0);
-    } break;
+    case GELU:
+        e_movsd_pool(0, const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
+        j_call((void*)spur_k_gelu); j_store(I->dst,0); break;
+    case ERF:
+        e_movsd_pool(0, const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
+        j_call((void*)spur_k_erf); j_store(I->dst,0); break;
+    case TANH:
+        e_movsd_pool(0, const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
+        j_call((void*)spur_k_tanh); j_store(I->dst,0); break;
+    case SIGMOID:
+        e_movsd_pool(0, const_slot(I->imm)); e_sd(0x59,0,XR(I->a));
+        j_call((void*)spur_k_sig);
+        e_movsd_pool(1, const_slot(1.0)); e_sd(0x58,XR(I->dst),0);
+        break;
     case LSE2:
         j_load(XR(I->dst),I->a); e_sd(0x5F,XR(I->dst),XR(I->b)); break;
     case ACCLSE:
