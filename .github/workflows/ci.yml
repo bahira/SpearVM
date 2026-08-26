@@ -54,6 +54,8 @@ jobs:
           mkdir -p bin
           gcc -O2 -mavx2 -mfma -static -o bin/test_encoding.exe tests/test_encoding.c
           ./bin/test_encoding.exe
-          gcc -O2 -Iinclude -mavx2 -mfma -shared \
+          gcc -O3 -Iinclude -mavx2 -mfma -shared \
               -o spur_math/spur_jit.dll src/spur.c -lm
+          gcc -O3 -Iinclude -mavx2 -mfma -shared \
+              -o bin/spur.dll src/spur.c -lm
           PYTHONPATH=. python -m pytest tests/test_map.py -v
