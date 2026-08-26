@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install numpy pytest scipy
-        run: pip install numpy pytest scipy
+        run: pip install numpy pytest scipy wheel
 
       - name: Compile noyaux (Linux)
         if: runner.os == 'Linux'
@@ -59,3 +59,38 @@ jobs:
           gcc -O3 -Iinclude -mavx2 -mfma -shared \
               -o bin/spur.dll src/spur.c -lm
           PYTHONPATH=. python -m pytest tests/test_map.py -v
+
+  linux-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build deps
+        run: pip install build wheel auditwheel
+
+      - name: Compile + package (build_package gere le .so linux)
+        run: |
+          gcc -O3 -mavx2 -mfma -fopenmp -shared \
+              -o spur_math/libspur_kernels.so src/spur_kernels.c
+          python -m build --wheel --no-isolation
+
+      - name: Tag linux puis vendore libgomp (auditwheel)
+        run: |
+          python -m wheel tags --platform-tag linux_x86_64 \
+              dist/spur_math-*py3-none-any.whl
+          auditwheel repair dist/spur_math-*linux_x86_64.whl --wheel-dir wheelhouse
+          auditwheel show wheelhouse/*.whl
+
+      - name: Smoke test du manylinux wheel
+        run: |
+          pip install --force-reinstall wheelhouse/*.whl
+          python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manylinux-wheel
+          path: wheelhouse/*.whl

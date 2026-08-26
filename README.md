@@ -31,9 +31,20 @@ pip install spur-math
 - **Backward erf/tanh/sigmoid** : gradients exacts des approximations
   rationnelles, gradcheck ~1.6e-09. Training complet possible :
   `erf_backward`, `tanh_backward`, `sigmoid_backward`.
+- **`matmul_backward(dY,A,B)`** : gradients (dA,dB) du matmul NT —
+  gradcheck 1e-10 ; la backprop d'une couche complète tient en
+  `gelu_backward` + `matmul_backward` + biais.
 - **Map kernel 4 entrées** : `out[i] = F(a[i], b[i], c[i], d[i])` via
   tableau de pointeurs ; `spur_free(handle)` + slots réutilisables ;
   builds sérialisés (SRWLOCK) — exec réentrant.
+
+### Feuille de route
+
+| Item | Statut | Déclencheur |
+|---|---|---|
+| bf16/fp16 | différé | aucun compute natif bf16 en AVX2 ; fp16 = upconvert partout — à faire sur besoin mémoire exprimé |
+| Dispatch AVX-512 | différé | aucun CPU de test dispo (runners CI = AVX2 max) |
+| Wheels manylinux pré-compilés | **job CI `linux-wheel`** (auditwheel, artifact à chaque run) | publication automatique au tag si besoin |
 
 ## Matmul (bench_mm)
 

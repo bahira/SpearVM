@@ -202,6 +202,21 @@ def gelu_backward(dY, x):
     return out
 
 
+def matmul_backward(dY, A, B):
+    """Gradients de C=A.B^T : retourne (dA, dB).
+
+    NT : out[i,j]=sum_k X[i,k]*Y[j,k] =>
+      dA[m,p] = sum_n dY[m,n]*B[n,p]  -> matmul_nt(dY,   B.T)
+      dB[n,p] = sum_m dY[m,n]*A[m,p]  -> matmul_nt(dY.T, A.T)
+    """
+    dY = np.asarray(dY)
+    dt = np.float32 if dY.dtype == np.float32 else np.float64
+    dA = matmul_nt(dY, np.ascontiguousarray(np.asarray(B, dtype=dt).T))
+    dB = matmul_nt(np.ascontiguousarray(dY.T),
+                   np.ascontiguousarray(np.asarray(A, dtype=dt).T))
+    return dA, dB
+
+
 def erf_backward(dY, x):
     """dX = dY * erf_approx'(x)."""
     dYc = np.ascontiguousarray(dY, dtype=np.float64)
