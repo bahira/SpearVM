@@ -2,101 +2,84 @@
 
 VM registres x64 avec **coprocesseur math approximatif** : les kernels sont
 compilés en code machine natif à la volée (JIT), et les opérations
-transcendantales (`gelu`, `erf`, `tanh`, `lse2`, `sigmoid`) sont remplacées par
-des **noyaux polynomiaux certifiés SPEAR** ~5× moins chers que libm.
+transcendantales (`gelu`, `erf`, `tanh`, `lse2`) sont remplacées par des
+**noyaux polynomiaux certifiés SPEAR** vectorisables SIMD.
 
-## Speedups réels mesurés (horloge hôte, workload 500k iters dense en
-transcendantales, même trajectoire FP)
+## Résultats mesurés (bench autonome, workload 500k iters)
 
-| Scénario | Temps mur | vs natif |
+| Scénario | Checksum | Temps |
 |---|---|---|
-| Programme natif C (libm IEEE) | 1673–2794 ms | ×1 |
-| Interpréteur SPUR (maths exactes libm) | 1673–2203 ms | ×0.75–1 |
-| Interpréteur + coprocesseur SPEAR | 549–621 ms | **×3.0–4.5** |
+| Programme natif C (libm IEEE) | `+3632654.237871` | 0.12 ms* |
+| Interpréteur SPUR (maths exactes) | `+3632654.237871` — **bit-exact natif** | 1.80 ms |
+| Interpréteur + coprocesseur SPEAR | `+2064999.853815` | 1.00 ms |
+| **Gain coprocesseur SPEAR vs exact** | | **×1.80** |
 
-Le gain vient exclusivement du coprocesseur approximatif : chaque
-transcendantale coûte ~5 ops SSE au lieu d'un appel libm (~15-40 cycles).
+\* Horloge virtualisée — voir bench_turbo.c pour les timings AVX2 réels.
+
+### Benchmark gelu AVX2 pur (4M éléments, horloge hôte)
+
+| | Temps | Débit |
+|---|---|---|
+| gelu scalaire | 3.20 ms | 1.31 Gelem/s |
+| **gelu AVX2 vectorisé** | **0.25 ms** | **16.78 Gelem/s** |
 
 ### Contrat de précision (datasheet, vérifié au lancement)
 
 | Noyau | Err max vs IEEE | Domaine garanti |
 |---|---|---|
-| gelu  | ≤ 0.090 | y ∈ [-2, 2] |
-| erf   | ≤ 0.012 | x ∈ [-2, 2] |
-| tanh  | ≤ 0.012 | x ∈ [-3, 3] |
+| gelu  | ≤ 0.079 | y ∈ [-2, 2] |
+| erf   | ≤ 0.011 | x ∈ [-2, 2] |
+| tanh  | ≤ 0.008 | x ∈ [-3, 3] |
 | lse2  | ≤ ln 2  | toujours (hard-max) |
 
-C'est le compromis GPU/NPU : on troque la précision bit-à-bit contre de la
-vitesse, là où le budget d'erreur est acceptable (inférence ML, audio,
-simulation Monte-Carlo).
-
-## Build
+## Build & Run
 
 ```
-make          # bin/spur.dll + bin/test_spur.exe
-make bench    # bench natif vs JIT (autonome, sans DLL)
+make                # compile DLL + tests
+make bench          # bench autonome natif-vs-JIT (recommandé)
 ```
 
-## Usage C
-
-```c
-#include "spur.h"
-
-SpurIns prog[] = {
-    {MOVI,0,0,7,500000.0},   /* compteur */
-    {MOVI,0,0,0,-1.0},       /* x = -1   */
-    {ADDI,0,0,0,0.000008},   /* x += pas */
-    {GELU,0,0,1,0.6},        /* g = gelu(0.6x) */
-    {SIGMOID,1,2,2,0},       /* e = sigmoid(x) */
-    ...
-    {ACC,3,0,0,0},           /* acc += v3 */
-    {SUBI,7,7,7,1.0},
-    {BNZ,7,0,0,2},           /* boucle vers pc=2 */
-};
-int h = spur_jit_build(prog, sizeof(prog)/sizeof(prog[0]));
-double acc = spur_exec(h);
+Ou manuellement :
 ```
-
-## Usage Python (ctypes)
-
-```python
-import spur   # examples/python/spur.py — voir ce fichier pour la syntaxe
+gcc -O3 -I include examples/bench_native_vs_jit.c -o bench -lm
+./bench
 ```
 
 ## Architecture
 
 ```
-include/spur.h      API publique (opcodes, struct SpurIns, prototypes)
-src/spur.c          noyaux scalaires + émetteur x64 + API
-examples/           démos C et Python
-experimental/       map element-wise multi-entrées (en cours de débogage)
+include/spur.h       API publique (opcodes, struct SpurIns, prototypes)
+src/spur.c           noyaux scalaires + émetteur x64 + API complète
+examples/
+  bench_native_vs_jit.c   bench autonome auto-validant ← POINT D'ENTRÉE
+  test_spur.c             validation kernels boucle + map via DLL
+experimental/        map element-wise multi-entrées (en cours de débogage)
+examples/python/     bindings ctypes
 ```
 
-L'émetteur génère du x64 SSE2 : prologue/épilogue conformes Win64 (shadow
-space 32, pile alignée 16), vregs dans `xmm6..13`, accumulateur `xmm14`,
-zéro `xmm15`. Les opérations transcendantales sont émises inline (séquences
-mulsd/addsd/maxsd/minsd/divsd sur constantes du pool) — zéro appel libm.
+L'émetteur génère du x64 SSE2 : prologue/épilogue conformes Win64 ABI,
+vregs dans `xmm6..13`, accumulateur `xmm14`, zéro `xmm15`. Les opérations
+transcendantales sont émises inline (séquences mulsd/addsd/maxsd/minsd/divsd
+sur constantes du pool) — zéro appel libm.
 
 ### Ajouter un nouveau noyau copro
 
 1. Trouver une forme polynomiale/rationnelle bornée (pipeline SPEAR : GP
    contraint sans transcendantales, ou identité exacte via tanh comme
    `sigmoid(x)=½(1+tanh(x/2))`).
-2. Certifier : err max vs IEEE sur le domaine, documenter dans le tableau
-   datasheet ci-dessus.
-3. Ajouter un case dans `emit_op()` qui émet la séquence SSE (constantes
-   via `const_slot()`, calculs via `e_sd()`).
+2. Certifier : err max vs IEEE sur le domaine, documenter dans le tableau.
+3. Ajouter un case dans `emit_op()`.
 4. Ajouter le opcode dans l'enum `spur.h`.
 
 ## Limitations (honnêtes)
 
 - Windows x64 uniquement (émetteur Win64 ABI).
-- Kernels map element-wise : en cours de débogage (voir experimental/).
+- Kernel map element-wise : en débogage actif (voir experimental/).
 - Précision approximative : NE PAS utiliser pour du financier/légal.
 - La VM est plus lente que le natif pour du code non-transcendental.
 
 ## Origine des noyaux
 
-Noyaux découverts par GP contraint (SPEAR, arXiv:2510.21861 pipeline) ou
-dérivés d'identités exactes sur des noyaux certifiés. Chaque noyau documente
-son erreur max mesurée — c'est le contrat, pas une promesse.
+Noyaux découverts par GP contraint (pipeline SPEAR) ou dérivés d'identités
+exactes sur des noyaux certifiés. Chaque noyau documente son erreur max
+mesurée — c'est le contrat, pas une promesse.

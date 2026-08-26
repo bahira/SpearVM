@@ -1,6 +1,0 @@
-loop kernel handle=0 acc=-nan
-map kernel handle=1
-  x=-1.000 gain=1.0 -> 0.000000
-  x=-0.875 gain=1.0 -> 0.000000
-  x=-0.750 gain=1.0 -> 0.000000
-  x=-0.625 gain=1.0 -> 0.000000
