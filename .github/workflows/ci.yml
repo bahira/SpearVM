@@ -52,8 +52,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p bin
-          gcc -O2 -mavx2 -mfma -shared -o bin/test_encoding.exe tests/test_encoding.c
+          gcc -O2 -mavx2 -mfma -static -o bin/test_encoding.exe tests/test_encoding.c
           ./bin/test_encoding.exe
           gcc -O2 -Iinclude -mavx2 -mfma -shared \
               -o spur_math/spur_jit.dll src/spur.c -lm
-          PYTHONPATH=. python tests/test_map.py
+          PYTHONPATH=. python -m pytest tests/test_map.py -v
