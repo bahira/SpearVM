@@ -87,7 +87,7 @@ jobs:
 
       - name: Smoke test du manylinux wheel
         run: |
-          pip install --force-reinstall wheelhouse/*.whl
+          pip install --force-reinstall numpy wheelhouse/*.whl
           python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
 
       - uses: actions/upload-artifact@v4
