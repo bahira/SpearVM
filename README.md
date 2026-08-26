@@ -75,6 +75,28 @@ python build_package.py --install
 > compilez le `.so` vous-meme avec la ligne gcc ci-dessus (le package affiche
 > la commande exacte si la lib manque).
 
+def gelu(x):
+    """GELU approximatif AVX2. Erreur max 0.079 sur [-2, 2], sature proprement au-dela."""
+```
+
+## Training (backprop)
+
+```python
+import spur_math as sm
+
+# forward fusionne
+Y = sm.matmul_nt_gelu(X, W)            # Y = gelu(X . W^T), un seul passage
+
+# backward — les gradients passent par le meme matmul
+T  = sm.matmul_nt(X, W)
+dY = dLdY * sm.gelu_backward(np.ones_like(T), T)   # ou directement gelu_backward(dLdY, T)
+dW = sm.matmul_nt(dY.T, X.T)
+dX = sm.matmul_nt(dY, W.T)
+```
+
+Gradients verifies par differences finies (err ~1e-10) et SGD convergeant
+(loss /87 en 300 pas, `tests/test_train.py`).
+
 ## Usage Python
 
 ```python
