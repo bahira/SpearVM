@@ -11,6 +11,21 @@ précision certifiée, appelables depuis Python/C.
 | ERF | 306 ms | 9 ms | **×34.0** |
 | TANH | 234 ms | 9 ms | **×26.0** |
 
+## Matmul (bench_mm)
+
+`examples/bench_mm.c` — C = A·B double, validation vs naif incluse.
+
+| n | naif ikj | dot scalaire | AVX2 dot | AVX4 bloc + OMP |
+|---|---|---|---|---|
+| 128 | 2.0 ms (2.1 GF) | ×0.12 | ×0.45 | ×0.73 (série) |
+| 256 | 23 ms (1.5 GF) | ×0.24 | ×1.02 | **×1.61** |
+| 512 | 198 ms (1.4 GF) | ×0.31 | ×0.37 | **×2.56** (3.5 GFLOPS) |
+
+- err ≤ 1.6e-14 sur toutes les variantes
+- blocage registres 4 lignes : chaque ligne de Bᵀ sert 4 rangs de A, 4 chaînes FMA indépendantes
+- OpenMP activé seulement si n ≥ 192 ; lancer avec `OMP_WAIT_POLICY=ACTIVE`
+- timings VM bruités (±2× entre runs), gains observés jusqu'à ×12 à n=256 machine au repos
+
 ## Précision (datasheet)
 
 Chaque noyau documente son erreur max vs IEEE :
