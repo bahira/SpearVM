@@ -1,0 +1,59 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  win-wheel:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - shell: bash
+        run: |
+          pip install build wheel numpy
+          python build_package.py
+          python -m wheel tags --platform-tag win_amd64 \
+              dist/spur_math-*py3-none-any.whl
+          rm -f dist/spur_math-*py3-none-any.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-wheel
+          path: dist/*.whl
+
+  upload:
+    needs: [sdist, win-wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install twine
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - run: mkdir dist && cp artifacts/sdist/* artifacts/win-wheel/* dist/
+      - name: Twine check + upload
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          twine check dist/*
+          twine upload --non-interactive dist/*

@@ -1,10 +1,18 @@
 import ctypes
 import glob
 import os
+import platform
 import shutil
 import subprocess
 
 import numpy as np
+
+# les noyaux sont des intrinsics x86 AVX2/FMA : refus clair ailleurs
+if platform.machine().lower() not in ("x86_64", "amd64"):
+    raise ImportError(
+        f"spur_math : architecture '{platform.machine()}' non supportee "
+        "(noyaux AVX2 x86-64 uniquement ; Mac ARM/Apple Silicon non couvert)."
+    )
 
 _PKG = os.path.dirname(os.path.abspath(__file__))
 _SRC_C = os.path.join(_PKG, "src", "spur_kernels.c")

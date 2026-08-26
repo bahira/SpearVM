@@ -58,7 +58,7 @@ jobs:
               -o spur_math/spur_jit.dll src/spur.c -lm
           gcc -O3 -Iinclude -mavx2 -mfma -shared \
               -o bin/spur.dll src/spur.c -lm
-          PYTHONPATH=. python -m pytest tests/test_map.py -v
+          PYTHONPATH=. python -m pytest tests/test_map.py tests/test_jit_pkg.py -v
 
   linux-wheel:
     runs-on: ubuntu-latest
