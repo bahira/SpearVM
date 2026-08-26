@@ -59,21 +59,47 @@ static inline void dot_row4(const double* arow, const double* brow,
     out[3] = hsum256(v3) + s3;
 }
 
-/* T = X . W^T : T[i][j] = dot(X_ligne_i, W_ligne_j) => W sert directement,
-   sans transposition (chaque ligne de W est lue sequentiellement)          */
+/* gelu SPEAR vectorise : r = x * clamp(0.306923x + 0.501, 0, 1.002) */
+static inline double gelu_s(double x) {
+    double u = 0.306923 * x + 0.501;
+    if (u < 0.0) u = 0.0;
+    if (u > 1.002) u = 1.002;
+    return 0.997729 * (x * u) - 0.004004; /* identique au noyau batch */
+}
+
+/* T[i][j] = gelu(dot(X_ligne_i, W_ligne_j)) — fusionne : plus de passe
+   memoire separee pour l'activation ; gelu scalaire apres reduction
+   (non-lineaire => reduction D'ABORD, gelu ensuite).                     */
 static void matmul_avx4(const double* X, const double* Wm, double* T, int m,
                         int k, int n) {
 #pragma omp parallel for schedule(static)
     for (int i0 = 0; i0 < m / 4; i0++) {
         const double* xrow = X + (size_t)i0 * 4 * k;
         double* trow = T + (size_t)i0 * 4 * n;
-        double out[4];
         for (int j = 0; j < n; j++) {
-            dot_row4(xrow, Wm + (size_t)j * k, out, k);
-            trow[j] = out[0];
-            trow[(size_t)n + j] = out[1];
-            trow[2 * (size_t)n + j] = out[2];
-            trow[3 * (size_t)n + j] = out[3];
+            const double* wr = Wm + (size_t)j * k;
+            __m256d v0 = _mm256_setzero_pd(), v1 = _mm256_setzero_pd();
+            __m256d v2 = _mm256_setzero_pd(), v3 = _mm256_setzero_pd();
+            int kk = 0;
+            for (; kk + 3 < k; kk += 4) {
+                __m256d bv = _mm256_loadu_pd(wr + kk);
+                v0 = _mm256_fmadd_pd(_mm256_loadu_pd(xrow + kk), bv, v0);
+                v1 = _mm256_fmadd_pd(_mm256_loadu_pd(xrow + k + kk), bv, v1);
+                v2 = _mm256_fmadd_pd(_mm256_loadu_pd(xrow + 2 * (size_t)k + kk), bv, v2);
+                v3 = _mm256_fmadd_pd(_mm256_loadu_pd(xrow + 3 * (size_t)k + kk), bv, v3);
+            }
+            double d0 = 0, d1 = 0, d2 = 0, d3 = 0;
+            for (; kk < k; kk++) {
+                double b = wr[kk];
+                d0 += xrow[kk] * b;
+                d1 += xrow[k + kk] * b;
+                d2 += xrow[2 * (size_t)k + kk] * b;
+                d3 += xrow[3 * (size_t)k + kk] * b;
+            }
+            trow[j] = gelu_s(hsum256(v0) + d0);
+            trow[(size_t)n + j] = gelu_s(hsum256(v1) + d1);
+            trow[2 * (size_t)n + j] = gelu_s(hsum256(v2) + d2);
+            trow[3 * (size_t)n + j] = gelu_s(hsum256(v3) + d3);
         }
     }
     for (int i = (m / 4) * 4; i < m; i++) { /* queue */
@@ -86,9 +112,9 @@ static void matmul_avx4(const double* X, const double* Wm, double* T, int m,
             for (; kk + 3 < k; kk += 4)
                 vacc = _mm256_fmadd_pd(_mm256_loadu_pd(xr + kk),
                                        _mm256_loadu_pd(wr + kk), vacc);
-            double acc = 0.0;
+            double acc = hsum256(vacc);
             for (; kk < k; kk++) acc += xr[kk] * wr[kk];
-            tr[j] = hsum256(vacc) + acc;
+            tr[j] = gelu_s(acc);
         }
     }
 }
@@ -105,36 +131,26 @@ int main(void) {
     double* X = malloc((size_t)M * K * 8);
     double* W = malloc((size_t)N * K * 8);
 
-    double* T = malloc((size_t)M * N * 8);
     double* Y = malloc((size_t)M * N * 8);
-    if (!X || !W || !T || !Y) return fprintf(stderr, "OOM\n"), 1;
+    if (!X || !W || !Y) return fprintf(stderr, "OOM\n"), 1;
 
     srand(42);
     fill_rand(X, (size_t)M * K);
     fill_rand(W, (size_t)N * K);
 
     /* warmup */
-    matmul_avx4(X, W, T, M, K, N);
+    matmul_avx4(X, W, Y, M, K, N);
 
-    /* --- etape 1 : matmul (T = produit brut, garde intact pour le dump) --- */
+    /* --- pipeline FUSIONNE en un seul passage : Y = gelu(X.W^T) --- */
     double t0 = now_ms();
-    int reps_mm = 5;
-    for (int r = 0; r < reps_mm; r++) matmul_avx4(X, W, T, M, K, N);
-    double t_mm = (now_ms() - t0) / reps_mm;
-
-    /* --- etape 2 : gelu batch, lit T ecrit Y (jamais en place ici) --- */
-    spur_batch_gelu(T, Y, (long long)M * N); /* warmup */
-    t0 = now_ms();
-    int reps_ge = 20;
-    for (int r = 0; r < reps_ge; r++) spur_batch_gelu(T, Y, (long long)M * N);
-    double t_ge = (now_ms() - t0) / reps_ge;
+    int reps = 5;
+    for (int r = 0; r < reps; r++) matmul_avx4(X, W, Y, M, K, N);
+    double t_tot = (now_ms() - t0) / reps;
 
     double flops = 2.0 * M * K * N;
-    printf("matmul  X.W^T : %8.2f ms  %6.2f GFLOPS\n", t_mm,
-           flops / t_mm / 1e6);
-    printf("gelu    batch  : %8.2f ms  %6.2f Gelem/s\n", t_ge,
-           M * N / t_ge / 1e6);
-    printf("TOTAL          : %8.2f ms\n", t_mm + t_ge);
+    printf("FUSE matmul+gelu : %8.2f ms  %6.2f GFLOPS\n", t_tot,
+           flops / t_tot / 1e6);
+    printf("TOTAL            : %8.2f ms\n", t_tot);
 
     /* dump pour validation numpy */
     FILE* f = fopen("nn_io.bin", "wb");
@@ -147,6 +163,7 @@ int main(void) {
                ((size_t)M * K + (size_t)N * K + (size_t)M * N) * 8 / 1048576.0);
     }
 
-    free(X); free(W); free(T); free(Y);
+    free(X); free(W); free(Y);
     return 0;
 }
+

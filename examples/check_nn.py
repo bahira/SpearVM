@@ -22,14 +22,12 @@ T = X @ W.T; Y_np = gelu(T)
 t_best = float("inf")
 for _ in range(5):
     t0 = time.perf_counter()
-    T = X @ W.T
-    Y_np = gelu(T)
+    Y_np = gelu(X @ W.T)
     t_best = min(t_best, (time.perf_counter() - t0) * 1000)
 
 print(f"numpy total : {t_best:.1f} ms")
 
 err = float(np.max(np.abs(Y_spear - Y_np)))
-rel = err / float(np.max(np.abs(Y_np)))
-print(f"err max     : {err:.3e} (rel {rel:.1e})")
-ok = err <= 0.085  # contrat datasheet 0.079 + marge bruit fp (ordre de somme)
-print("OK" if ok else "ECHEC", "- ecart vs contrat gelu (<=0.079) + bruit fp matmul")
+print(f"err max     : {err:.3e}")
+ok = err <= 0.085  # contrat datasheet gelu (<=0.079) + marge bruit fp
+print("OK" if ok else "ECHEC", "- pipeline fusionne vs reference exacte")
