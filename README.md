@@ -61,7 +61,7 @@ NT sans copies.
 - validation : `bin/bench_nn.exe` puis `python examples/check_nn.py`
 
 ```bash
-gcc -O3 -march=native -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn -lm
+gcc -O3 -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn -lm
 OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
 ```
 
@@ -77,7 +77,7 @@ Chaque noyau documente son erreur max vs IEEE :
 
 ```bash
 make              # DLL + tests
-gcc -O3 -march=native -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll
+gcc -O3 -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll
 ```
 
 ## Installation Python

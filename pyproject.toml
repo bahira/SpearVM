@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spur-math"
-version = "0.2.1"
-description = "Accelerated AVX2 math kernels with certified SPEAR polynomials (gelu, erf, tanh)"
+version = "0.3.0"
+description = "Accelerated AVX2 math kernels with certified SPEAR polynomials (gelu, erf, tanh), tiled matmul and fused FFN layer with backprop"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"

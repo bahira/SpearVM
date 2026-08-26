@@ -1,0 +1,55 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install numpy pytest scipy
+        run: pip install numpy pytest scipy
+
+      - name: Compile noyaux (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          gcc -O3 -mavx2 -mfma -fopenmp -shared \
+              -o spur_math/libspur_kernels.so src/spur_kernels.c
+
+      - name: Compile noyaux (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          gcc -O3 -mavx2 -mfma -fopenmp -shared \
+              -o spur_math/spur_kernels.dll src/spur_kernels.c
+
+      - name: Tests noyaux + training (les deux OS)
+        env:
+          PYTHONPATH: .
+          OMP_WAIT_POLICY: ACTIVE
+        run: pytest tests/test_correctness.py tests/test_train.py -v
+
+      - name: Test matmul vs BLAS
+        if: runner.os == 'Linux'
+        env:
+          PYTHONPATH: .
+        run: python tests/bench_matmul_api.py
+
+      - name: JIT x64 (Windows seulement)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          gcc -O2 -mavx2 -mfma -shared -o bin/test_encoding.exe tests/test_encoding.c
+          ./bin/test_encoding.exe
+          gcc -O2 -Iinclude -mavx2 -mfma -shared \
+              -o spur_math/spur_jit.dll src/spur.c -lm
+          PYTHONPATH=. python tests/test_map.py

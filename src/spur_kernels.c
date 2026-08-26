@@ -106,6 +106,12 @@ static inline double gelu_s(double x){
     return 0.997729*(x*u)-0.004004;
 }
 
+/* Check CPU : evite SIGILL si le CPU ne supporte pas AVX2+FMA.
+   Les bindings Python appellent spur_cpu_ok() avant tout binding.        */
+int spur_cpu_ok(void){
+    return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+}
+
 #define MM_KC 256   /* profondeur tuile : bande A de 4*KC*8 = 8 Ko          */
 #define MM_NC 256   /* largeur tuile  : tuile B de NC*KC*8  = 512 Ko (L2)   */
 
@@ -169,8 +175,10 @@ void spur_matmul_nt(const double* A,const double* B,double* C,
 /* Variante fusionnee : C = gelu(A . B^T). La gelu est non-lineaire :
    k ne peut PAS etre coupe -> blocage colonnes seul (tuile B de NC x k
    reste chaude pendant le sweep des lignes de A).                          */
-void spur_matmul_nt_gelu(const double* A,const double* B,double* C,
+void spur_matmul_nt_gelu(const double* A,const double* B,
+                         const double* bias,double* C,
                          long long m,long long k,long long n){
+    /* bias : NULL = sans biais, sinon tableau de n (ajoute AVANT gelu)   */
     for(long long jb=0;jb<n;jb+=MM_NC){
         const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
         #pragma omp parallel for schedule(static)
@@ -195,10 +203,10 @@ void spur_matmul_nt_gelu(const double* A,const double* B,double* C,
                     d0+=ar[q]*b; d1+=ar[k+q]*b;
                     d2+=ar[2*k+q]*b; d3+=ar[3*k+q]*b;
                 }
-                cr[j]=gelu_s(hs256(v0)+d0);
-                cr[n+j]=gelu_s(hs256(v1)+d1);
-                cr[2*n+j]=gelu_s(hs256(v2)+d2);
-                cr[3*n+j]=gelu_s(hs256(v3)+d3);
+                cr[j]=gelu_s(hs256(v0)+d0+(bias?bias[j]:0.0));
+                cr[n+j]=gelu_s(hs256(v1)+d1+(bias?bias[j]:0.0));
+                cr[2*n+j]=gelu_s(hs256(v2)+d2+(bias?bias[j]:0.0));
+                cr[3*n+j]=gelu_s(hs256(v3)+d3+(bias?bias[j]:0.0));
             }
         }
         #pragma omp parallel for schedule(static)
@@ -214,7 +222,7 @@ void spur_matmul_nt_gelu(const double* A,const double* B,double* C,
                                         _mm256_loadu_pd(wr+q),acc);
                 double s=hs256(acc);
                 for(;q<k;q++) s+=xr[q]*wr[q];
-                tr[j]=gelu_s(s);
+                tr[j]=gelu_s(s+(bias?bias[j]:0.0));
             }
         }
     }

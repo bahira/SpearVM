@@ -1,5 +1,13 @@
 import ctypes
+import os
+import sys
+
 import numpy as np
+import pytest
+
+if sys.platform != "win32" or not os.path.exists("bin/spur.dll"):
+    pytest.skip("JIT map kernel : Windows x64 avec bin/spur.dll requis",
+                allow_module_level=True)
 
 lib = ctypes.CDLL("bin/spur.dll")
 

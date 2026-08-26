@@ -15,6 +15,14 @@ if not os.path.exists(_dll_path):
 
 _dll = ctypes.CDLL(os.path.abspath(_dll_path))
 
+# refus propre (au lieu de SIGILL) sur CPU sans AVX2+FMA
+_dll.spur_cpu_ok.restype = ctypes.c_int
+if not _dll.spur_cpu_ok():
+    raise ImportError(
+        "spur_math : ce paquet requiert un CPU avec AVX2 et FMA "
+        "(Intel Haswell 2013+, AMD Zen 2017+)."
+    )
+
 
 def _bind(name):
     f = getattr(_dll, name)
@@ -29,11 +37,16 @@ _batch_erf = _bind("spur_batch_erf")
 _batch_tanh = _bind("spur_batch_tanh")
 
 
-def _bind_mm(name):
+def _bind_mm(name, with_bias=False):
     f = getattr(_dll, name)
-    f.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
-                  ctypes.POINTER(ctypes.c_double),
-                  ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+    if with_bias:
+        f.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
+                      ctypes.c_void_p, ctypes.POINTER(ctypes.c_double),
+                      ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+    else:
+        f.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
+                      ctypes.POINTER(ctypes.c_double),
+                      ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
     f.restype = None
     return f
 
@@ -47,7 +60,7 @@ def _bind_bw(name):
 
 
 _matmul_nt = _bind_mm("spur_matmul_nt")
-_matmul_nt_gelu = _bind_mm("spur_matmul_nt_gelu")
+_matmul_nt_gelu = _bind_mm("spur_matmul_nt_gelu", with_bias=True)
 _gelu_backward = _bind_bw("spur_batch_gelu_backward")
 
 
@@ -65,15 +78,22 @@ def matmul_nt(a, b):
     return c
 
 
-def matmul_nt_gelu(a, b):
-    """C = gelu(A . B^T) fusionne en un seul passage. a:(m,k) b:(n,k) -> (m,n)."""
+def matmul_nt_gelu(a, b, bias=None):
+    """C = gelu(A . B^T + bias) fusionne. a:(m,k) b:(n,k) bias:(n,) -> (m,n).
+    bias=None accepte (retro-compatible)."""
     a = np.ascontiguousarray(a, dtype=np.float64)
     b = np.ascontiguousarray(b, dtype=np.float64)
     m, k = a.shape
     n = b.shape[0]
     c = np.zeros((m, n))
+    bp = None
+    if bias is not None:
+        bias = np.ascontiguousarray(bias, dtype=np.float64)
+        assert bias.shape == (n,), f"bias attendu ({n},), recu {bias.shape}"
+        bp = bias.ctypes.data_as(ctypes.c_void_p)
     _matmul_nt_gelu(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                     b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                    bp,
                     c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                     m, k, n)
     return c
