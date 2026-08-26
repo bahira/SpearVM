@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: spur-math
+Version: 0.1.0
+Summary: Accelerated AVX2 math kernels with certified SPEAR polynomials (gelu, erf, tanh)
+Author: bahira
+License: MIT
+Keywords: simd,avx2,math,erf,tanh,gelu
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: C
+Classifier: Topic :: Scientific/Engineering
+Classifier: Intended Audience :: Science/Research
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # SpearVM
 
 **Accélérateur mathématique SIMD** — noyaux transcendantals vectorisés AVX2,

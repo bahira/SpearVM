@@ -11,7 +11,7 @@ class TestGelu:
         x = np.linspace(0.1, 2.0, 1000)
         out = spur_math.gelu(x)
         ref = 0.5 * x * (1 + np.vectorize(math.erf)(x / np.sqrt(2)))
-        assert np.max(np.abs(out - ref)) < 0.15
+        assert np.max(np.abs(out - ref)) < 0.09
 
     def test_zero(self):
         out = spur_math.gelu(np.array([0.0]))
@@ -35,7 +35,7 @@ class TestErf:
         x = np.linspace(-2, 2, 10000)
         ref = np.vectorize(math.erf)(x)
         got = spur_math.erf(x)
-        assert np.max(np.abs(got - ref)) < 0.20
+        assert np.max(np.abs(got - ref)) < 0.012
 
     def test_bounds(self):
         x = np.linspace(-2, 2, 10000)
@@ -52,7 +52,7 @@ class TestTanh:
         x = np.linspace(-2, 2, 10000)
         ref = np.tanh(x)
         got = spur_math.tanh(x)
-        assert np.max(np.abs(got - ref)) < 0.50
+        assert np.max(np.abs(got - ref)) < 0.009
 
     def test_range(self):
         x = np.linspace(-3, 3, 10000)

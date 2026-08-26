@@ -36,12 +36,14 @@ void spur_batch_erf(const double* x,double* out,long long n){
     __m256d hi=_mm256_set1_pd(2.0),lo=_mm256_set1_pd(-2.0);
     __m256d cn=_mm256_set1_pd(1.106774),b0=_mm256_set1_pd(0.995);
     __m256d c3=_mm256_set1_pd(0.034298),b2=_mm256_set1_pd(0.378089);
+    __m256d one=_mm256_set1_pd(1.0);
     #pragma omp parallel for schedule(static)
     for(long long i=0;i<vec;i+=4){
         __m256d vx=_mm256_loadu_pd(x+i);
         __m256d y=_mm256_max_pd(lo,_mm256_min_pd(hi,vx));
         __m256d t=_mm256_mul_pd(y,y);
-        __m256d num=_mm256_add_pd(y,_mm256_mul_pd(c3,t));
+        /* num = y + c3*y^3 = y*(1 + c3*y^2) — PAS y + c3*y^2 ! */
+        __m256d num=_mm256_mul_pd(y,_mm256_add_pd(one,_mm256_mul_pd(c3,t)));
         __m256d den=_mm256_add_pd(b0,_mm256_mul_pd(b2,t));
         _mm256_storeu_pd(out+i,_mm256_mul_pd(cn,_mm256_div_pd(num,den)));
     }
@@ -57,12 +59,14 @@ void spur_batch_tanh(const double* x,double* out,long long n){
     __m256d hi=_mm256_set1_pd(3.0),lo=_mm256_set1_pd(-3.0);
     __m256d cn=_mm256_set1_pd(0.900021),b0=_mm256_set1_pd(0.90122);
     __m256d c3=_mm256_set1_pd(0.053639),b2=_mm256_set1_pd(0.343141);
+    __m256d one=_mm256_set1_pd(1.0);
     #pragma omp parallel for schedule(static)
     for(long long i=0;i<vec;i+=4){
         __m256d vx=_mm256_loadu_pd(x+i);
         __m256d y=_mm256_max_pd(lo,_mm256_min_pd(hi,vx));
         __m256d t=_mm256_mul_pd(y,y);
-        __m256d num=_mm256_add_pd(y,_mm256_mul_pd(c3,t));
+        /* num = y + c3*y^3 = y*(1 + c3*y^2) — PAS y + c3*y^2 ! */
+        __m256d num=_mm256_mul_pd(y,_mm256_add_pd(one,_mm256_mul_pd(c3,t)));
         __m256d den=_mm256_add_pd(b0,_mm256_mul_pd(b2,t));
         _mm256_storeu_pd(out+i,_mm256_mul_pd(cn,_mm256_div_pd(num,den)));
     }

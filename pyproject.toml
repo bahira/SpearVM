@@ -5,19 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spur-math"
 version = "0.1.0"
-description = "Noyaux mathématiques AVX2 accélérés — polynômes certifiés SPEAR"
+description = "Accelerated AVX2 math kernels with certified SPEAR polynomials (gelu, erf, tanh)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
-authors=[{name="bahira"}]
-keywords=["simd","avx2","math","erf","tanh","gelu"]
-classifiers=[
+authors = [{name = "bahira"}]
+keywords = ["simd", "avx2", "math", "erf", "tanh", "gelu"]
+classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: C",
     "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
 ]
 
 [tool.setuptools]
-packages=["spur_math"]
-package-data={"spur_math"=["*.dll","*.so"]}
-include-package-data=true
+packages = ["spur_math"]
+package-data = {"spur_math" = ["*.dll", "*.so"]}
+include-package-data = true
