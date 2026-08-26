@@ -90,8 +90,11 @@ void spur_batch_lse2(const double* a,const double* b,double* out,long long n){
 
 /* ================= MATMUL (C = A . B^T, convention BLAS NT) ================
    C[i,j] = sum_k A[i,k]*B[j,k]  — C m x n, A m x k, B n x k (row-major).
-   Blocage registres 4 lignes : chaque ligne de B sert 4 rangs de A,
-   4 chaines FMA independantes. Valide err=0 vs reference naif.            */
+   - blocage registres 4 lignes : chaque ligne de B sert 4 rangs de A,
+     4 chaines FMA independantes ;
+   - TUILLAGE CACHE (KC x NC) : les tuiles de B restent en L2 au lieu de
+     re-streamer tout B depuis la RAM a chaque bloc de lignes de A.
+   Valide err<=1e-15 vs numpy sur toutes tailles (tests/test_train.py).     */
 static inline double hs256(__m256d v){
     __m128d lo=_mm256_castpd256_pd128(v),hi=_mm256_extractf128_pd(v,1);
     lo=_mm_add_pd(lo,hi);
@@ -103,101 +106,119 @@ static inline double gelu_s(double x){
     return 0.997729*(x*u)-0.004004;
 }
 
+#define MM_KC 256   /* profondeur tuile : bande A de 4*KC*8 = 8 Ko          */
+#define MM_NC 256   /* largeur tuile  : tuile B de NC*KC*8  = 512 Ko (L2)   */
+
 void spur_matmul_nt(const double* A,const double* B,double* C,
                     long long m,long long k,long long n){
-    #pragma omp parallel for schedule(static)
-    for(long long i0=0;i0<m/4;i0++){
-        const double* ar=A+(size_t)i0*4*k;
-        double* cr=C+(size_t)i0*4*n;
-        for(long long j=0;j<n;j++){
-            const double* br=B+(size_t)j*k;
-            __m256d v0=_mm256_setzero_pd(),v1=_mm256_setzero_pd();
-            __m256d v2=_mm256_setzero_pd(),v3=_mm256_setzero_pd();
-            long long q=0;
-            for(;q+3<k;q+=4){
-                __m256d bv=_mm256_loadu_pd(br+q);
-                v0=_mm256_fmadd_pd(_mm256_loadu_pd(ar+q),bv,v0);
-                v1=_mm256_fmadd_pd(_mm256_loadu_pd(ar+k+q),bv,v1);
-                v2=_mm256_fmadd_pd(_mm256_loadu_pd(ar+2*k+q),bv,v2);
-                v3=_mm256_fmadd_pd(_mm256_loadu_pd(ar+3*k+q),bv,v3);
+    memset(C,0,(size_t)m*n*sizeof(double));
+    for(long long kb=0;kb<k;kb+=MM_KC){
+        const long long ke=(kb+MM_KC<k)?kb+MM_KC:k;
+        for(long long jb=0;jb<n;jb+=MM_NC){
+            const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+            /* sweep complet des lignes de A sur la tuile B courante */
+            #pragma omp parallel for schedule(static)
+            for(long long i0=0;i0<m/4;i0++){
+                const double* ar=A+(size_t)i0*4*k;
+                double* cr=C+(size_t)i0*4*n;
+                for(long long j=jb;j<je;j++){
+                    const double* br=B+(size_t)j*k;
+                    __m256d v0=_mm256_setzero_pd(),v1=_mm256_setzero_pd();
+                    __m256d v2=_mm256_setzero_pd(),v3=_mm256_setzero_pd();
+                    long long q=kb;
+                    for(;q+3<ke;q+=4){
+                        __m256d bv=_mm256_loadu_pd(br+q);
+                        v0=_mm256_fmadd_pd(_mm256_loadu_pd(ar+q),bv,v0);
+                        v1=_mm256_fmadd_pd(_mm256_loadu_pd(ar+k+q),bv,v1);
+                        v2=_mm256_fmadd_pd(_mm256_loadu_pd(ar+2*k+q),bv,v2);
+                        v3=_mm256_fmadd_pd(_mm256_loadu_pd(ar+3*k+q),bv,v3);
+                    }
+                    double d0=0,d1=0,d2=0,d3=0;
+                    for(;q<ke;q++){
+                        double b=br[q];
+                        d0+=ar[q]*b; d1+=ar[k+q]*b;
+                        d2+=ar[2*k+q]*b; d3+=ar[3*k+q]*b;
+                    }
+                    cr[j]      +=hs256(v0)+d0;
+                    cr[n+j]    +=hs256(v1)+d1;
+                    cr[2*n+j]  +=hs256(v2)+d2;
+                    cr[3*n+j]  +=hs256(v3)+d3;
+                }
             }
-            double d0=0,d1=0,d2=0,d3=0;
-            for(;q<k;q++){
-                double b=br[q];
-                d0+=ar[q]*b; d1+=ar[k+q]*b;
-                d2+=ar[2*k+q]*b; d3+=ar[3*k+q]*b;
+            /* queue : lignes restantes m%4 (accumulation identique) */
+            #pragma omp parallel for schedule(static)
+            for(long long i=(m/4)*4;i<m;i++){
+                const double* xr=A+(size_t)i*k;
+                double* tr=C+(size_t)i*n;
+                for(long long j=jb;j<je;j++){
+                    const double* wr=B+(size_t)j*k;
+                    __m256d acc=_mm256_setzero_pd();
+                    long long q=kb;
+                    for(;q+3<ke;q+=4)
+                        acc=_mm256_fmadd_pd(_mm256_loadu_pd(xr+q),
+                                            _mm256_loadu_pd(wr+q),acc);
+                    double s=hs256(acc);
+                    for(;q<ke;q++) s+=xr[q]*wr[q];
+                    tr[j]+=s;
+                }
             }
-            cr[j]=hs256(v0)+d0;
-            cr[n+j]=hs256(v1)+d1;
-            cr[2*n+j]=hs256(v2)+d2;
-            cr[3*n+j]=hs256(v3)+d3;
-        }
-    }
-    for(long long i=(m/4)*4;i<m;i++){
-        const double* xr=A+(size_t)i*k;
-        double* tr=C+(size_t)i*n;
-        for(long long j=0;j<n;j++){
-            const double* wr=B+(size_t)j*k;
-            __m256d acc=_mm256_setzero_pd();
-            long long q=0;
-            for(;q+3<k;q+=4)
-                acc=_mm256_fmadd_pd(_mm256_loadu_pd(xr+q),
-                                    _mm256_loadu_pd(wr+q),acc);
-            double s=hs256(acc);
-            for(;q<k;q++) s+=xr[q]*wr[q];
-            tr[j]=s;
         }
     }
 }
 
-/* Variante fusionnee : C = gelu(A . B^T) — activation gratuite apres reduction */
+/* Variante fusionnee : C = gelu(A . B^T). La gelu est non-lineaire :
+   k ne peut PAS etre coupe -> blocage colonnes seul (tuile B de NC x k
+   reste chaude pendant le sweep des lignes de A).                          */
 void spur_matmul_nt_gelu(const double* A,const double* B,double* C,
                          long long m,long long k,long long n){
-    #pragma omp parallel for schedule(static)
-    for(long long i0=0;i0<m/4;i0++){
-        const double* ar=A+(size_t)i0*4*k;
-        double* cr=C+(size_t)i0*4*n;
-        for(long long j=0;j<n;j++){
-            const double* br=B+(size_t)j*k;
-            __m256d v0=_mm256_setzero_pd(),v1=_mm256_setzero_pd();
-            __m256d v2=_mm256_setzero_pd(),v3=_mm256_setzero_pd();
-            long long q=0;
-            for(;q+3<k;q+=4){
-                __m256d bv=_mm256_loadu_pd(br+q);
-                v0=_mm256_fmadd_pd(_mm256_loadu_pd(ar+q),bv,v0);
-                v1=_mm256_fmadd_pd(_mm256_loadu_pd(ar+k+q),bv,v1);
-                v2=_mm256_fmadd_pd(_mm256_loadu_pd(ar+2*k+q),bv,v2);
-                v3=_mm256_fmadd_pd(_mm256_loadu_pd(ar+3*k+q),bv,v3);
+    for(long long jb=0;jb<n;jb+=MM_NC){
+        const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+        #pragma omp parallel for schedule(static)
+        for(long long i0=0;i0<m/4;i0++){
+            const double* ar=A+(size_t)i0*4*k;
+            double* cr=C+(size_t)i0*4*n;
+            for(long long j=jb;j<je;j++){
+                const double* br=B+(size_t)j*k;
+                __m256d v0=_mm256_setzero_pd(),v1=_mm256_setzero_pd();
+                __m256d v2=_mm256_setzero_pd(),v3=_mm256_setzero_pd();
+                long long q=0;
+                for(;q+3<k;q+=4){
+                    __m256d bv=_mm256_loadu_pd(br+q);
+                    v0=_mm256_fmadd_pd(_mm256_loadu_pd(ar+q),bv,v0);
+                    v1=_mm256_fmadd_pd(_mm256_loadu_pd(ar+k+q),bv,v1);
+                    v2=_mm256_fmadd_pd(_mm256_loadu_pd(ar+2*k+q),bv,v2);
+                    v3=_mm256_fmadd_pd(_mm256_loadu_pd(ar+3*k+q),bv,v3);
+                }
+                double d0=0,d1=0,d2=0,d3=0;
+                for(;q<k;q++){
+                    double b=br[q];
+                    d0+=ar[q]*b; d1+=ar[k+q]*b;
+                    d2+=ar[2*k+q]*b; d3+=ar[3*k+q]*b;
+                }
+                cr[j]=gelu_s(hs256(v0)+d0);
+                cr[n+j]=gelu_s(hs256(v1)+d1);
+                cr[2*n+j]=gelu_s(hs256(v2)+d2);
+                cr[3*n+j]=gelu_s(hs256(v3)+d3);
             }
-            double d0=0,d1=0,d2=0,d3=0;
-            for(;q<k;q++){
-                double b=br[q];
-                d0+=ar[q]*b; d1+=ar[k+q]*b;
-                d2+=ar[2*k+q]*b; d3+=ar[3*k+q]*b;
-            }
-            cr[j]=gelu_s(hs256(v0)+d0);
-            cr[n+j]=gelu_s(hs256(v1)+d1);
-            cr[2*n+j]=gelu_s(hs256(v2)+d2);
-            cr[3*n+j]=gelu_s(hs256(v3)+d3);
         }
-    }
-    for(long long i=(m/4)*4;i<m;i++){
-        const double* xr=A+(size_t)i*k;
-        double* tr=C+(size_t)i*n;
-        for(long long j=0;j<n;j++){
-            const double* wr=B+(size_t)j*k;
-            __m256d acc=_mm256_setzero_pd();
-            long long q=0;
-            for(;q+3<k;q+=4)
-                acc=_mm256_fmadd_pd(_mm256_loadu_pd(xr+q),
-                                    _mm256_loadu_pd(wr+q),acc);
-            double s=hs256(acc);
-            for(;q<k;q++) s+=xr[q]*wr[q];
-            tr[j]=gelu_s(s);
+        #pragma omp parallel for schedule(static)
+        for(long long i=(m/4)*4;i<m;i++){
+            const double* xr=A+(size_t)i*k;
+            double* tr=C+(size_t)i*n;
+            for(long long j=jb;j<je;j++){
+                const double* wr=B+(size_t)j*k;
+                __m256d acc=_mm256_setzero_pd();
+                long long q=0;
+                for(;q+3<k;q+=4)
+                    acc=_mm256_fmadd_pd(_mm256_loadu_pd(xr+q),
+                                        _mm256_loadu_pd(wr+q),acc);
+                double s=hs256(acc);
+                for(;q<k;q++) s+=xr[q]*wr[q];
+                tr[j]=gelu_s(s);
+            }
         }
     }
 }
-
 /* ================= GELU BACKWARD (training) ================================
    dX = dY * gelu'(x) pour r(x)=ck*(x*clamp(c306*x+c5,0,cm))+cb :
    interieur : ck*(u + c306*x) ; u<=0 : ~0 ; u>=cm : ck*cm.               */
