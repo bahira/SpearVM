@@ -448,7 +448,6 @@ void spur_matmul_nt_gelu_f32(const float* A,const float* B,
             float* cr=C+(size_t)i0*8*n;
             for(long long j=jb;j<je;j++){
                 const float* br=B+(size_t)j*k;
-                float biasj=bias?bias[j]:0.0f;
                 __m256 acc=_mm256_setzero_ps();
                 long long q=0;
                 for(;q+7<k;q+=8)
@@ -456,7 +455,18 @@ void spur_matmul_nt_gelu_f32(const float* A,const float* B,
                                         _mm256_loadu_ps(br+q),acc);
                 float s=hsum8(acc);
                 for(;q<k;q++) s+=ar[q]*br[q];
-                cr[j]=gelu_f32_scalar(s+biasj);
+                cr[j]=gelu_f32_scalar(s+(bias?bias[j]:0.0f));
+                /* lignes 1..7 du bloc : memes offsets que spur_matmul_nt_f32 */
+                for(long long r2=1;r2<8;r2++){
+                    __m256 vr=_mm256_setzero_ps();
+                    const float* arr=ar+(size_t)r2*k;
+                    for(q=0;q+7<k;q+=8)
+                        vr=_mm256_fmadd_ps(_mm256_loadu_ps(arr+q),
+                                           _mm256_loadu_ps(br+q),vr);
+                    float sr=hsum8(vr);
+                    for(;q<k;q++) sr+=arr[q]*br[q];
+                    cr[(size_t)r2*n+j]=gelu_f32_scalar(sr+(bias?bias[j]:0.0f));
+                }
             }
         }
         #pragma omp parallel for schedule(static)

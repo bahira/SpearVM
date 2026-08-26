@@ -109,7 +109,9 @@ _matmul_nt_gelu = _bind_mm("spur_matmul_nt_gelu", with_bias=True)
 _gelu_backward = _bind_bw("spur_batch_gelu_backward")
 
 _PF = ctypes.POINTER(ctypes.c_float)
-_batch_gelu_f32 = _bind("spur_batch_gelu_f32")
+_batch_gelu_f32 = getattr(_dll, "spur_batch_gelu_f32")
+_batch_gelu_f32.argtypes = [_PF, _PF, ctypes.c_longlong]
+_batch_gelu_f32.restype = None
 
 _matmul_nt_f32 = getattr(_dll, "spur_matmul_nt_f32")
 _matmul_nt_f32.argtypes = [_PF, _PF, _PF] + [ctypes.c_longlong] * 3
