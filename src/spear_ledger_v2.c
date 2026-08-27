@@ -48,6 +48,14 @@ double spv2_gelu(double x){
                                  SPV2_TANH_D, SPV2_TANH_NDEN, 4.0);
     return 0.5 * x * (1.0 + h);
 }
+double spv2_gelu_quintic(double x){
+    double t = SPV2_GELUQ_A * x + 0.5;
+    if(t < 0.0) return -SPV2_GELUQ_OFF;   /* queue gauche saturee */
+    if(t > 1.0) return  x - SPV2_GELUQ_OFF; /* queue droite: x - off */
+    double t2 = t * t;
+    double s = t2 * t * (6.0 * t2 - 15.0 * t + 10.0); /* smoothstep */
+    return fma(x, s, -SPV2_GELUQ_OFF);
+}
 double spv2_sigmoid(double x){
     double h = spv2_rat_odd_v(0.5 * x, SPV2_TANH_N, SPV2_TANH_NNUM,
                                         SPV2_TANH_D, SPV2_TANH_NDEN, 4.0);
@@ -125,6 +133,31 @@ void spv2_batch_gelu(const double* x, double* out, long long n){
         _mm256_storeu_pd(out + i, g);
     }
     for(long long i = vec; i < n; i++) out[i] = spv2_gelu(x[i]);
+}
+
+void spv2_batch_gelu_quintic(const double* x, double* out, long long n){
+    long long vec = n & ~3LL;
+    v4 a = _mm256_set1_pd(SPV2_GELUQ_A), half = _mm256_set1_pd(0.5);
+    v4 off = _mm256_set1_pd(SPV2_GELUQ_OFF);
+    v4 one = _mm256_set1_pd(1.0), zero = _mm256_setzero_pd();
+    v4 c6 = _mm256_set1_pd(6.0), c15 = _mm256_set1_pd(15.0), c10 = _mm256_set1_pd(10.0);
+    #pragma omp parallel for schedule(static)
+    for(long long i = 0; i < vec; i += 4){
+        v4 vx = _mm256_loadu_pd(x + i);
+        v4 t  = _mm256_add_pd(_mm256_mul_pd(a, vx), half);
+        v4 lo = _mm256_cmp_pd(t, zero, _CMP_LT_OQ);
+        v4 hi = _mm256_cmp_pd(t, one,  _CMP_GT_OQ);
+        t = _mm256_min_pd(_mm256_max_pd(t, zero), one);
+        v4 t2 = _mm256_mul_pd(t, t);
+        v4 s = _mm256_mul_pd(_mm256_mul_pd(t2, t),
+               _mm256_fmadd_pd(c6, t2, _mm256_sub_pd(c10, _mm256_mul_pd(c15, t))));
+        v4 r = _mm256_sub_pd(_mm256_mul_pd(vx, s), off);
+        v4 tail = _mm256_sub_pd(vx, off);
+        r = _mm256_blendv_pd(r, tail, hi);
+        r = _mm256_blendv_pd(r, _mm256_sub_pd(zero, off), lo);
+        _mm256_storeu_pd(out + i, r);
+    }
+    for(long long i = vec; i < n; i++) out[i] = spv2_gelu_quintic(x[i]);
 }
 
 void spv2_batch_sigmoid(const double* x, double* out, long long n){

@@ -47,11 +47,17 @@ double spur_k_erf (double x);
 double spur_k_tanh(double x);
 double spur_k_lse2(double a,double b);
 
+/* ---- Noyaux directs v2 quintique ---- */
+double spur_k_gelu_quintic(double x);
+void   spur_batch_gelu_quintic(const double* x, double* out, long long n);
+
 /* ---- Noyaux v2 (fit Lawson quasi-minimax, precision x12-x453 vs v1) ---- */
 void spv2_batch_tanh   (const double* x, double* out, long long n);
 void spv2_batch_erf    (const double* x, double* out, long long n);
 void spv2_batch_gelu   (const double* x, double* out, long long n);
 void spv2_batch_sigmoid(const double* x, double* out, long long n);
+double spv2_gelu_quintic(double x);
+void   spv2_batch_gelu_quintic(const double* x, double* out, long long n);
 
 #ifdef __cplusplus
 }

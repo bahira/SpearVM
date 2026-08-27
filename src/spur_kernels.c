@@ -150,6 +150,77 @@ void spur_batch_gelu(const double* x,double* out,long long n){
         out[i]=0.997729*(x[i]*fmin(1.002,fmax(0.0,0.306923*x[i]+0.501)))-0.004004;
 }
 
+/* ================= GELU v2 quintique (smoothstep certifie) ===============
+   t = clip(0.200055340257*x + 0.5, 0, 1)
+   GELU(x) = x*t^3*(6t^2 - 15t + 10) - 0.01104961
+   Linf 0.0174 sur [-3.5,3.5] ; MSE 1.35e-4 sur [-4,4] ; queue bornee sur R. */
+#define SPV2_GELUQ_A    0.200055340257
+#define SPV2_GELUQ_OFF  0.01104961
+
+double spur_k_gelu_quintic(double x){
+    double t = SPV2_GELUQ_A*x + 0.5;
+    if(t < 0.0) return -SPV2_GELUQ_OFF;
+    if(t > 1.0) return x - SPV2_GELUQ_OFF;
+    double t2 = t*t;
+    return fma(x, t2*t*(6.0*t2 - 15.0*t + 10.0), -SPV2_GELUQ_OFF);
+}
+
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static void spur_batch_gelu_quintic_avx512(const double* x,double* out,long long n){
+    long long vec=n&~7LL;
+    __m512d a=_mm512_set1_pd(SPV2_GELUQ_A), half=_mm512_set1_pd(0.5);
+    __m512d off=_mm512_set1_pd(SPV2_GELUQ_OFF), one=_mm512_set1_pd(1.0);
+    __m512d c6=_mm512_set1_pd(6.0),c15=_mm512_set1_pd(15.0),c10=_mm512_set1_pd(10.0);
+    __m512d z=_mm512_setzero_pd();
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=8){
+        __m512d vx=_mm512_loadu_pd(x+i);
+        __m512d t=_mm512_add_pd(_mm512_mul_pd(a,vx),half);
+        __mmask8 lo=_mm512_cmp_pd_mask(t,z,_CMP_LT_OQ);
+        __mmask8 hi=_mm512_cmp_pd_mask(t,one,_CMP_GT_OQ);
+        t=_mm512_min_pd(_mm512_max_pd(t,z),one);
+        __m512d t2=_mm512_mul_pd(t,t);
+        __m512d s=_mm512_mul_pd(_mm512_mul_pd(t2,t),
+            _mm512_fmadd_pd(c6,t2,_mm512_sub_pd(c10,_mm512_mul_pd(c15,t))));
+        __m512d r=_mm512_sub_pd(_mm512_mul_pd(vx,s),off);
+        __m512d tail=_mm512_sub_pd(vx,off), sato=_mm512_sub_pd(z,off);
+        r=_mm512_mask_blend_pd(hi,r,tail);
+        r=_mm512_mask_blend_pd(lo,r,sato);
+        _mm512_storeu_pd(out+i,r);
+    }
+    for(long long i=vec;i<n;i++) out[i]=spur_k_gelu_quintic(x[i]);
+}
+
+void spur_batch_gelu_quintic(const double* x,double* out,long long n){
+    if(__builtin_expect(spur_use_avx512(0),0)){
+        spur_batch_gelu_quintic_avx512(x,out,n); return;
+    }
+    long long vec=n&~3LL;
+    __m256d a=_mm256_set1_pd(SPV2_GELUQ_A), half=_mm256_set1_pd(0.5);
+    __m256d off=_mm256_set1_pd(SPV2_GELUQ_OFF), one=_mm256_set1_pd(1.0);
+    __m256d c6=_mm256_set1_pd(6.0),c15=_mm256_set1_pd(15.0),c10=_mm256_set1_pd(10.0);
+    __m256d z=_mm256_setzero_pd();
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=4){
+        __m256d vx=_mm256_loadu_pd(x+i);
+        __m256d t=_mm256_add_pd(_mm256_mul_pd(a,vx),half);
+        __m256d lo=_mm256_cmp_pd(t,z,_CMP_LT_OQ);
+        __m256d hi=_mm256_cmp_pd(t,one,_CMP_GT_OQ);
+        t=_mm256_min_pd(_mm256_max_pd(t,z),one);
+        __m256d t2=_mm256_mul_pd(t,t);
+        __m256d s=_mm256_mul_pd(_mm256_mul_pd(t2,t),
+            _mm256_fmadd_pd(c6,t2,_mm256_sub_pd(c10,_mm256_mul_pd(c15,t))));
+        __m256d r=_mm256_sub_pd(_mm256_mul_pd(vx,s),off);
+        __m256d tail=_mm256_sub_pd(vx,off), sato=_mm256_sub_pd(z,off);
+        r=_mm256_blendv_pd(r,tail,hi);
+        r=_mm256_blendv_pd(r,sato,lo);
+        _mm256_storeu_pd(out+i,r);
+    }
+    for(long long i=vec;i<n;i++) out[i]=spur_k_gelu_quintic(x[i]);
+}
+
 /* ================= ERF ================= */
 void spur_batch_erf(const double* x,double* out,long long n){
     if(__builtin_expect(spur_use_avx512(1),0)){

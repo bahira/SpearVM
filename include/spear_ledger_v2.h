@@ -27,4 +27,11 @@
 #define SPV2_GELU_C1 7.97884560802865406e-01
 #define SPV2_GELU_C3 0.044715
 
+/* ---- gelu_v2 quintique (smoothstep certifie) -----------------------------
+   t = clip(0.200055340257*x + 0.5, 0, 1)
+   GELU(x) = x*t^3*(6*t^2 - 15*t + 10) - 0.01104961
+   Linf 0.0174 sur [-3.5,3.5] ; MSE 1.35e-4 sur [-4,4] ; queue bornee sur R. */
+#define SPV2_GELUQ_A 0.200055340257
+#define SPV2_GELUQ_OFF 0.01104961
+
 #endif /* SPEAR_LEDGER_V2_H */

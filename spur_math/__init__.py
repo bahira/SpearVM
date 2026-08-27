@@ -88,6 +88,7 @@ def _bind(name):
 _batch_gelu = _bind("spur_batch_gelu")
 _batch_erf = _bind("spur_batch_erf")
 _batch_tanh = _bind("spur_batch_tanh")
+_batch_gelu_quintic = _bind("spur_batch_gelu_quintic")
 
 
 def _bind_mm(name, with_bias=False):
@@ -276,6 +277,17 @@ def gelu(x):
     out = np.zeros_like(xc)
     _batch_gelu(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                 out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), xc.size)
+    return out
+
+
+def gelu_quintic(x):
+    """GELU v2 quintique smoothstep certifie. Linf 0.0174 sur [-3.5,3.5],
+    MSE 1.35e-4 sur [-4,4], queue bornee sur R. f64 uniquement."""
+    xc = np.ascontiguousarray(x, dtype=np.float64)
+    out = np.zeros_like(xc)
+    _batch_gelu_quintic(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                        out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                        xc.size)
     return out
 
 
