@@ -1,7 +1,8 @@
 """Bindings JIT (map kernel multi-entrees) — Linux x86-64 & Windows x64.
 
-Compile automatiquement la lib si absente :
-    gcc -O2 -mavx2 -mfma -fPIC -shared -Iinclude -o spur_math/spur_jit.{dll,so} src/spur.c -lm
+Compile automatiquement la lib si absente (spur_posix.c sous Linux/SysV,
+spur.c sous Windows/Win64) :
+    gcc -O2 -mavx2 -mfma -fPIC -shared -Iinclude -o spur_math/spur_jit.{dll,so} src/spur_posix.c -lm
 """
 import ctypes
 import os
@@ -21,7 +22,9 @@ else:
 _dll_path = os.path.join(_HERE, _lib_name)
 
 if not os.path.exists(_dll_path):
-    src = os.path.join(os.path.dirname(_HERE), "src", "spur.c")
+    # portage POSIX (SysV ABI) pour Linux ; spur.c (Win64 ABI) sur Windows
+    _src_name = "spur.c" if sys.platform == "win32" else "spur_posix.c"
+    src = os.path.join(os.path.dirname(_HERE), "src", _src_name)
     inc = os.path.join(os.path.dirname(_HERE), "include")
     cmd = (f"gcc -O2 -mavx2 -mfma -fPIC -shared -I{inc} "
            f"-o {_dll_path} {src} -lm")
