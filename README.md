@@ -108,6 +108,25 @@ Chaque noyau documente son erreur max vs IEEE :
 - tanh : ≤ 0.009 sur [-3, 3]
 - lse2 : hard-max (écart ≤ ln 2)
 
+### GELU — trois variantes au choix
+
+| Variante | L-inf | MSE | Opérations | Binding Python |
+|---|---|---|---|---|
+| `gelu` (v1, legacy) | 0.079 | 7.9e-4 | 3 mul + clamp | `gelu(x)` |
+| `gelu_quintic` (v2 smoothstep) | 0.0174 | 1.35e-4 | 5 mul, 0 div | `gelu_quintic(x)` |
+| `gelu_erf` (haute précision) | **2.05e-5** | **8.3e-11** | Horner 5/6 + 1 div | `gelu_erf(x)` |
+
+Les trois sont **100 % ALU** (aucune transcendance `exp`/`erf`). Le `gelu_erf` réutilise le
+rationnel `erf_v2` certifié : `GELU = 0.5·x·(1+erf(x/√2))`, avec clamp à 3.5 (saturation
+`GELU→x` pour `x>~4.95`, correct asymptotiquement).
+
+**Compromis débit vs précision** (batch AVX2, min-of-N, machine 2 cœurs partagés) :
+le surcoût arithmétique de `gelu_erf` (1 division + Horner 5/6 en plus) est **masqué à
+l'échelle batch par la bande passante mémoire** — mesuré entre −17 % et +21 % selon le run,
+moyenne ≈ 0 (dans le bruit de la VM cloud). À taille cache, le surcoût médian est ~20 %.
+Règle pratique : **quintic quand le nombre d'ops compte (kernel fuse), `erf` quand la
+précision prime (training, backprop)** — le gain de précision est ×850 pour un coût arithmétique marginal.
+
 ## Build
 
 ```bash
