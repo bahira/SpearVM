@@ -1,20 +1,37 @@
-"""Bindings JIT (map kernel multi-entrees) — Windows x64 uniquement.
+"""Bindings JIT (map kernel multi-entrees) — Linux x86-64 & Windows x64.
 
-Compile le DLL si absent :
-    gcc -O3 -mavx2 -mfma -shared -o spur_math/spur_jit.dll src/spur.c -lm
+Compile automatiquement la lib si absente :
+    gcc -O2 -mavx2 -mfma -fPIC -shared -Iinclude -o spur_math/spur_jit.{dll,so} src/spur.c -lm
 """
 import ctypes
 import os
+import platform
+import subprocess
+import sys
 
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_dll_path = os.path.join(_HERE, "spur_jit.dll")
+
+if sys.platform == "win32":
+    _lib_name = "spur_jit.dll"
+else:
+    _lib_name = "spur_jit.so"
+
+_dll_path = os.path.join(_HERE, _lib_name)
+
 if not os.path.exists(_dll_path):
-    raise ImportError(
-        "spur_jit.dll introuvable (JIT Windows x64). "
-        "gcc -O2 -mavx2 -mfma -shared -o spur_math/spur_jit.dll src/spur.c -lm"
-    )
+    src = os.path.join(os.path.dirname(_HERE), "src", "spur.c")
+    inc = os.path.join(os.path.dirname(_HERE), "include")
+    cmd = (f"gcc -O2 -mavx2 -mfma -fPIC -shared -I{inc} "
+           f"-o {_dll_path} {src} -lm")
+    print(f"spur_jit absent, compilation automatique...\n  {cmd}")
+    try:
+        subprocess.check_call(cmd, shell=True)
+    except subprocess.CalledProcessError as e:
+        raise ImportError(
+            f"Echec compilation JIT ({e}). Installez gcc ou compilez manuellement :\n  {cmd}"
+        ) from e
 
 _dll = ctypes.CDLL(_dll_path)
 

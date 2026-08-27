@@ -1,16 +1,24 @@
 """Map kernel multi-entrees : add 2-in bit-exact, gelu*in1, 4-in somme, free."""
 import os
+import platform
 import sys
 
 import numpy as np
 import pytest
 
-if sys.platform != "win32" or not os.path.exists("bin/spur.dll"):
-    pytest.skip("JIT map kernel : Windows x64 avec bin/spur.dll requis",
+_JIT_OK = os.path.exists("bin/spur.dll") or os.path.exists("bin/spur.so")
+_JIT_OK = _JIT_OK and (
+    sys.platform == "win32"
+    or (sys.platform.startswith("linux") and platform.machine() in ("x86_64", "amd64")))
+if not _JIT_OK:
+    pytest.skip("JIT map kernel : x64 (Windows, ou Linux avec bin/spur.so build via make jit)",
                 allow_module_level=True)
 
 import ctypes
-lib = ctypes.CDLL("bin/spur.dll")
+if sys.platform == "win32":
+    lib = ctypes.CDLL("bin/spur.dll")
+else:
+    lib = ctypes.CDLL("bin/spur.so")
 
 
 class SpurIns(ctypes.Structure):

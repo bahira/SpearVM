@@ -1,17 +1,20 @@
 """Le module packagé spur_math._jit : compile_map/run_map/free (nouvelle ABI)."""
 import os
+import platform
 import sys
 
 import numpy as np
 import pytest
 
-if sys.platform != "win32":
-    pytest.skip("JIT Windows x64", allow_module_level=True)
+if sys.platform != "win32" and not (
+    sys.platform.startswith("linux")
+    and platform.machine() in ("x86_64", "amd64")):
+    pytest.skip("JIT : Windows x64 ou Linux x86-64", allow_module_level=True)
 
 try:
     import spur_math._jit as jit
-except ImportError as e:  # dll pas construite dans cet env
-    pytest.skip(f"spur_jit.dll indisponible : {e}", allow_module_level=True)
+except ImportError as e:
+    pytest.skip(f"spur_jit indisponible : {e}", allow_module_level=True)
 
 
 def gelu_np(v):
