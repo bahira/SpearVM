@@ -4,7 +4,7 @@
 
 **Accélérateur mathématique SIMD** — noyaux transcendantals vectorisés AVX2,
 précision certifiée, matmul tuilé, couche FFN fusionnée avec backprop,
-mini-JIT x64 pour programmes élément-par-élément. Python/C.
+mini-JIT x64 portable Linux/macOS/Windows pour programmes élément-par-élément. Python/C.
 
 ```bash
 pip install spur-math
@@ -129,7 +129,8 @@ python build_package.py --install
 
 > Note : le wheel actuel embarque un binaire Windows x64. Sur Linux/macOS,
 > compilez le `.so` vous-meme avec la ligne gcc ci-dessus (le package affiche
-> la commande exacte si la lib manque).
+> la commande exacte si la lib manque). Le JIT est désormais portable
+> (voir `src/spur_posix.c` pour le portage POSIX : mmap/mprotect, System V ABI).
 
 def gelu(x):
     """GELU approximatif AVX2. Erreur max 0.079 sur [-2, 2], sature proprement au-dela."""
@@ -172,7 +173,7 @@ tests/                Tests de correction
 
 ## Limitations
 
-- Windows x64 uniquement
+- Windows x64 + Linux/macOS x64 (JIT POSIX porté)
 - Précision approximative (±0.01–0.09 selon noyau)
 - Pas de support GPU
 
