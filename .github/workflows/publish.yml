@@ -14,7 +14,7 @@ jobs:
           python-version: "3.11"
       - run: pip install build twine
       - run: python -m build --sdist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -33,7 +33,7 @@ jobs:
           python -m wheel tags --platform-tag win_amd64 \
               dist/spur_math-*py3-none-any.whl
           rm -f dist/spur_math-*py3-none-any.whl
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: win-wheel
           path: dist/*.whl
@@ -46,7 +46,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install twine
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
       - run: mkdir dist && cp artifacts/sdist/* artifacts/win-wheel/* dist/

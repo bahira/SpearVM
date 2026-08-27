@@ -100,7 +100,7 @@ jobs:
           pip install --force-reinstall numpy wheelhouse/*.whl
           python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: manylinux-wheel
           path: wheelhouse/*.whl
