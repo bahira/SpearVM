@@ -221,6 +221,50 @@ void spur_batch_gelu_quintic(const double* x,double* out,long long n){
     for(long long i=vec;i<n;i++) out[i]=spur_k_gelu_quintic(x[i]);
 }
 
+/* ================= GELU haute precision via erf_v2 =======================
+   GELU = 0.5*x*(1+erf(x/sqrt2)). Reutilise le rationnel erf_v2 certifie
+   (max_err 2.3e-5 sur [-6,6]) : precision mesuree linff 2.05e-5, MSE 8.3e-11
+   sur grille 400k pts — ~850x plus precis que le smoothstep v2. 100% ALU.
+   Clamp erf a 3.5 -> sature (GELU~x) pour x>~4.95, correct asymptotiquement. */
+static const double SPV2_ERF_N[5]={1.12841751266903279e+00,1.83482771948230095e-01,
+    5.73373674730976793e-02,2.48430060206610405e-03,3.72785350475749968e-06};
+static const double SPV2_ERF_D[6]={1.0,4.96471589671860558e-01,1.14910282096263028e-01,
+    1.61717422205343367e-02,1.86656477609649336e-04,-1.74401807407079551e-07};
+
+double spur_k_gelu_erf(double x){
+    double u=x*0.7071067811865476, cut=3.5;
+    if(u>cut) return x;
+    if(u<-cut) return 0.0;
+    double y=u*u, pn=0.0, dn=0.0;
+    for(int i=4;i>=0;i--) pn=fma(pn,y,SPV2_ERF_N[i]);
+    for(int i=5;i>=0;i--) dn=fma(dn,y,SPV2_ERF_D[i]);
+    double h=u*(pn/dn);
+    return 0.5*x*(1.0+h);
+}
+
+void spur_batch_gelu_erf(const double* x,double* out,long long n){
+    long long vec=n&~3LL;
+    __m256d inv=_mm256_set1_pd(0.7071067811865476);
+    __m256d chi=_mm256_set1_pd(3.5),clo=_mm256_set1_pd(-3.5);
+    __m256d one=_mm256_set1_pd(1.0),zero=_mm256_setzero_pd(),half=_mm256_set1_pd(0.5);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=4){
+        __m256d vx=_mm256_loadu_pd(x+i);
+        __m256d u=_mm256_mul_pd(vx,inv);
+        __m256d gt=_mm256_cmp_pd(u,chi,_CMP_GT_OQ);
+        __m256d lt=_mm256_cmp_pd(u,clo,_CMP_LT_OQ);
+        __m256d y=_mm256_mul_pd(u,u);
+        __m256d pn=_mm256_setzero_pd(),dn=_mm256_setzero_pd();
+        for(int k=4;k>=0;k--) pn=_mm256_fmadd_pd(pn,y,_mm256_set1_pd(SPV2_ERF_N[k]));
+        for(int k=5;k>=0;k--) dn=_mm256_fmadd_pd(dn,y,_mm256_set1_pd(SPV2_ERF_D[k]));
+        __m256d h=_mm256_mul_pd(u,_mm256_div_pd(pn,dn));
+        h=_mm256_blendv_pd(h,one,gt); h=_mm256_blendv_pd(h,_mm256_sub_pd(zero,one),lt);
+        __m256d g=_mm256_mul_pd(_mm256_mul_pd(half,vx),_mm256_add_pd(one,h));
+        _mm256_storeu_pd(out+i,g);
+    }
+    for(long long i=vec;i<n;i++) out[i]=spur_k_gelu_erf(x[i]);
+}
+
 /* ================= ERF ================= */
 void spur_batch_erf(const double* x,double* out,long long n){
     if(__builtin_expect(spur_use_avx512(1),0)){

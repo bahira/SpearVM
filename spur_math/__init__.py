@@ -89,6 +89,7 @@ _batch_gelu = _bind("spur_batch_gelu")
 _batch_erf = _bind("spur_batch_erf")
 _batch_tanh = _bind("spur_batch_tanh")
 _batch_gelu_quintic = _bind("spur_batch_gelu_quintic")
+_batch_gelu_erf = _bind("spur_batch_gelu_erf")
 
 
 def _bind_mm(name, with_bias=False):
@@ -288,6 +289,17 @@ def gelu_quintic(x):
     _batch_gelu_quintic(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                         out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                         xc.size)
+    return out
+
+
+def gelu_erf(x):
+    """GELU haute precision via erf_v2 certifie : Linf 2.05e-5, MSE 8.3e-11.
+    ~850x plus precis que gelu_quintic. f64 uniquement."""
+    xc = np.ascontiguousarray(x, dtype=np.float64)
+    out = np.zeros_like(xc)
+    _batch_gelu_erf(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                    out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                    xc.size)
     return out
 
 

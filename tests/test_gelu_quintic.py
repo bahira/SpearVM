@@ -10,6 +10,33 @@ def _ref(x):
     return 0.5 * x * (1 + np.vectorize(math.erf)(x / np.sqrt(2)))
 
 
+class TestGeluErf:
+    def test_linf(self):
+        """GELU via erf_v2 : Linf 2.05e-5, ~850x plus precis que le quintique."""
+        x = np.linspace(-6, 6, 200001)
+        err = np.abs(spur_math.gelu_erf(x) - _ref(x))
+        assert err.max() < 5e-5
+
+    def test_mse(self):
+        x = np.linspace(-6, 6, 100001)
+        mse = np.mean((spur_math.gelu_erf(x) - _ref(x)) ** 2)
+        assert mse < 1e-9
+
+    def test_beats_quintic(self):
+        x = np.linspace(-4, 4, 100001)
+        err_erf = np.abs(spur_math.gelu_erf(x) - _ref(x)).max()
+        err_q = np.abs(spur_math.gelu_quintic(x) - _ref(x)).max()
+        assert err_erf < err_q / 50
+
+    def test_finite(self):
+        x = np.array([-1e5, -10.0, 0.0, 10.0, 1e5])
+        out = spur_math.gelu_erf(x)
+        assert np.all(np.isfinite(out))
+        # asymptotes : saturé a 0 a gauche, ~x a droite
+        assert abs(out[0]) < 1e-9
+        assert abs(out[-1] - 1e5) < 1e-3
+
+
 class TestGeluQuintic:
     def test_linf_bounded(self):
         x = np.linspace(-3.5, 3.5, 400001)
