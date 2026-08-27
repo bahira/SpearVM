@@ -47,7 +47,7 @@ jobs:
           PYTHONPATH: .
         run: python tests/bench_matmul_api.py
 
-      - name: JIT x64 (Windows seulement)
+      - name: JIT x64 (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -58,6 +58,16 @@ jobs:
               -o spur_math/spur_jit.dll src/spur.c -lm
           gcc -O3 -Iinclude -mavx2 -mfma -shared \
               -o bin/spur.dll src/spur.c -lm
+          PYTHONPATH=. python -m pytest tests/test_map.py tests/test_jit_pkg.py -v
+
+      - name: JIT x64 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p bin
+          gcc -O2 -mavx2 -mfma -fPIC -Iinclude -shared \
+              -o spur_math/spur_jit.so src/spur.c -lm
+          gcc -O2 -mavx2 -mfma -fPIC -Iinclude -shared \
+              -o bin/spur.so src/spur.c -lm
           PYTHONPATH=. python -m pytest tests/test_map.py tests/test_jit_pkg.py -v
 
   linux-wheel:
