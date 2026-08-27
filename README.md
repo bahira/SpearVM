@@ -127,6 +127,10 @@ moyenne ≈ 0 (dans le bruit de la VM cloud). À taille cache, le surcoût médi
 Règle pratique : **quintic quand le nombre d'ops compte (kernel fuse), `erf` quand la
 précision prime (training, backprop)** — le gain de précision est ×850 pour un coût arithmétique marginal.
 
+> 📊 **Voir [`CHAMPIONS.md`](CHAMPIONS.md)** pour le répertoire complet des formes
+> championnes (GELU / Tanh / Sigmoid / SiLU), leurs coefficients et le compromis
+> speed vs accuracy.
+
 ## Build
 
 ```bash
