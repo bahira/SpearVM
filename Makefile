@@ -1,7 +1,7 @@
 # Makefile SpearVM (baseline AVX2, pas de -march=native)
 CC      = gcc
 CFLAGS  = -O3 -mavx2 -mfma
-JITCFLAGS = -O2 -mavx2 -mfma -Iinclude
+JITCFLAGS = -O2 -mavx2 -mfma -Iinclude -fPIC
 LDLIBS  = -lm
 
 .PHONY: all kernels jit encoding bench clean test

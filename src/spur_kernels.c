@@ -8,9 +8,129 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <stdlib.h>
+
+/* ================= AVX-512 runtime dispatch ================================
+   Compile avec -mavx2 (binaire portable), active AVX-512 a l'execution
+   si le CPU le supporte. Env vars :
+     SPUR_FORCE_AVX2=1   -> tout en AVX2
+     SPUR_FORCE_AVX512=1 -> tout en AVX-512
+   Policy mesuree : erf/tanh (division-bound) gagnent ~20% en AVX-512,
+   gelu (FMA-chain) reste en AVX2 (downclock). */
+#if defined(__x86_64__) || defined(_M_X64)
+#define SPIR_HAS_TARGET_ATTR 1
+#endif
+
+static int spur_cpu_avx512(void){
+    static int cached = -1;
+    if (cached < 0)
+        cached = (__builtin_cpu_supports("avx2")
+               && __builtin_cpu_supports("fma")
+               && __builtin_cpu_supports("avx512f")) ? 1 : 0;
+    return cached;
+}
+
+#define SPUR_VEX_AUTO 0
+#define SPUR_VEX_AVX2 1
+#define SPUR_VEX_512  2
+
+static int spur_vex_override(void){
+    static int cached = -1;
+    if (cached < 0){
+        const char* f2=getenv("SPUR_FORCE_AVX2");
+        const char* f512=getenv("SPUR_FORCE_AVX512");
+        cached = (f2 && f2[0]=='1')   ? SPUR_VEX_AVX2
+               : (f512 && f512[0]=='1') ? SPUR_VEX_512
+               : SPUR_VEX_AUTO;
+    }
+    return cached;
+}
+
+static int spur_use_avx512(int prefers_512){
+    switch (spur_vex_override()){
+        case SPUR_VEX_AVX2: return 0;
+        case SPUR_VEX_512:  return 1;
+        default:            return prefers_512 && spur_cpu_avx512();
+    }
+}
+
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static void spur_batch_gelu_avx512(const double* x,double* out,long long n){
+    long long vec=n&~7LL;
+    __m512d c306=_mm512_set1_pd(0.306923);
+    __m512d c501=_mm512_set1_pd(0.501);
+    __m512d cm=_mm512_set1_pd(1.002);
+    __m512d z=_mm512_setzero_pd();
+    __m512d ck=_mm512_set1_pd(0.997729);
+    __m512d cb=_mm512_set1_pd(-0.004004);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=8){
+        __m512d vx=_mm512_loadu_pd(x+i);
+        __m512d u=_mm512_fmadd_pd(c306,vx,c501);
+        u=_mm512_max_pd(u,z); u=_mm512_min_pd(u,cm);
+        __m512d r=_mm512_mul_pd(vx,u);
+        _mm512_storeu_pd(out+i,_mm512_add_pd(_mm512_mul_pd(r,ck),cb));
+    }
+    for(long long i=vec;i<n;i++)
+        out[i]=0.997729*(x[i]*fmin(1.002,fmax(0.0,0.306923*x[i]+0.501)))-0.004004;
+}
+
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static void spur_rat_avx512(const double* x,double* out,long long n,
+                            double lo,double hi,double cn,
+                            double c3,double b0,double b2){
+    long long vec=n&~7LL;
+    __m512d vlo=_mm512_set1_pd(lo),vhi=_mm512_set1_pd(hi);
+    __m512d vcn=_mm512_set1_pd(cn),vc3=_mm512_set1_pd(c3);
+    __m512d vb0=_mm512_set1_pd(b0),vb2=_mm512_set1_pd(b2);
+    __m512d one=_mm512_set1_pd(1.0);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=8){
+        __m512d vx=_mm512_loadu_pd(x+i);
+        __m512d y=_mm512_max_pd(vlo,_mm512_min_pd(vhi,vx));
+        __m512d t=_mm512_mul_pd(y,y);
+        __m512d num=_mm512_mul_pd(y,_mm512_add_pd(one,_mm512_mul_pd(vc3,t)));
+        __m512d den=_mm512_add_pd(vb0,_mm512_mul_pd(vb2,t));
+        _mm512_storeu_pd(out+i,_mm512_mul_pd(vcn,_mm512_div_pd(num,den)));
+    }
+    for(long long i=vec;i<n;i++){
+        double y=fmax(lo,fmin(hi,x[i]));
+        out[i]=cn*((y+c3*y*y*y)/(b0+b2*y*y));
+    }
+}
+
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static void spur_batch_gelu_f32_avx512(const float* x,float* out,long long n){
+    long long vec=n&~15LL;
+    __m512 c306=_mm512_set1_ps(0.306923f),c501=_mm512_set1_ps(0.501f);
+    __m512 cm=_mm512_set1_ps(1.002f),z=_mm512_setzero_ps();
+    __m512 ck=_mm512_set1_ps(0.997729f),cb=_mm512_set1_ps(-0.004004f);
+    #pragma omp parallel for schedule(static)
+    for(long long i=0;i<vec;i+=16){
+        __m512 vx=_mm512_loadu_ps(x+i);
+        __m512 u=_mm512_fmadd_ps(c306,vx,c501);
+        u=_mm512_max_ps(u,z); u=_mm512_min_ps(u,cm);
+        __m512 r=_mm512_mul_ps(vx,u);
+        _mm512_storeu_ps(out+i,_mm512_add_ps(_mm512_mul_ps(r,ck),cb));
+    }
+    for(long long i=vec;i<n;i++){
+        float u=0.306923f*x[i]+0.501f;
+        u=fminf(fmaxf(u,0.0f),1.002f);
+        out[i]=0.997729f*(x[i]*u)-0.004004f;
+    }
+}
 
 /* ================= GELU ================= */
 void spur_batch_gelu(const double* x,double* out,long long n){
+    if(__builtin_expect(spur_use_avx512(0),0)){
+        spur_batch_gelu_avx512(x,out,n); return;
+    }
     long long vec=n&~3LL;
     __m256d c306=_mm256_set1_pd(0.306923);
     __m256d c501=_mm256_set1_pd(0.501);
@@ -32,6 +152,10 @@ void spur_batch_gelu(const double* x,double* out,long long n){
 
 /* ================= ERF ================= */
 void spur_batch_erf(const double* x,double* out,long long n){
+    if(__builtin_expect(spur_use_avx512(1),0)){
+        spur_rat_avx512(x,out,n,-2.0,2.0,1.106774,0.034298,0.995,0.378089);
+        return;
+    }
     long long vec=n&~3LL;
     __m256d hi=_mm256_set1_pd(2.0),lo=_mm256_set1_pd(-2.0);
     __m256d cn=_mm256_set1_pd(1.106774),b0=_mm256_set1_pd(0.995);
@@ -55,6 +179,10 @@ void spur_batch_erf(const double* x,double* out,long long n){
 
 /* ================= TANH ================= */
 void spur_batch_tanh(const double* x,double* out,long long n){
+    if(__builtin_expect(spur_use_avx512(1),0)){
+        spur_rat_avx512(x,out,n,-3.0,3.0,0.900021,0.053639,0.90122,0.343141);
+        return;
+    }
     long long vec=n&~3LL;
     __m256d hi=_mm256_set1_pd(3.0),lo=_mm256_set1_pd(-3.0);
     __m256d cn=_mm256_set1_pd(0.900021),b0=_mm256_set1_pd(0.90122);
@@ -354,6 +482,9 @@ void spur_batch_sigmoid_backward(const double* dY,const double* x,
 
 /* ================= FLOAT32 — 8 lanes/vector, ~x2 debit ==================== */
 void spur_batch_gelu_f32(const float* x,float* out,long long n){
+    if(__builtin_expect(spur_use_avx512(0),0)){
+        spur_batch_gelu_f32_avx512(x,out,n); return;
+    }
     long long vec=n&~7LL;
     __m256 c306=_mm256_set1_ps(0.306923f),c501=_mm256_set1_ps(0.501f);
     __m256 cm=_mm256_set1_ps(1.002f),z=_mm256_setzero_ps();

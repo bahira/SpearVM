@@ -115,7 +115,7 @@ static void emit_prologue(int with_arrays){
     je8(0x48);je8(0xBB);                           /* movabs rbx,pool             */
     je64((unsigned long long)(uintptr_t)jpool);
         je8(0x66);je8(0x45);je8(0x0F);je8(0xEF);je8(0xFF); /* pxor xmm15,xmm15        */
-    je8(0x66);je8(0x43);je8(0x0F);je8(0xEF);je8(0xF6); /* pxor xmm14,xmm14 (acc)  */
+    je8(0x66);je8(0x45);je8(0x0F);je8(0xEF);je8(0xF6); /* pxor xmm14,xmm14 (acc)  */
         je8(0x45);je8(0x31);je8(0xFF);                     /* xor r15d,r15d (index i) */
     (void)with_arrays; /* branche map gere ses propres pointeurs (SysV ci-bas) */
 }
@@ -234,7 +234,7 @@ int spur_jit_build(const SpurIns* prog,int n){
         if(I->op==HALT){ halted=1; continue; }
         if(I->op==BNZ){
             int xr=XR(I->a);
-            je8(0x66); je8((unsigned char)(0x40|(((xr)&8)>>1))); je8(0x0F); je8(0x2F);
+            je8(0x66); je8((unsigned char)(0x41|(((xr)&8)>>1))); je8(0x0F); je8(0x2F);
             je8((unsigned char)(0xC0|(((xr)&7)<<3)|7));   /* comisd xr,xmm15      */
             je8(0x0F); je8(0x85); fx_rel(jlen,ioff[(int)I->imm]); jlen+=4;
             continue;
