@@ -141,7 +141,7 @@ gcc -O3 -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll
 ## Installation Python
 
 ```bash
-pip install spur-math          # apres publication PyPI
+pip install spur-math          # v0.5.3 sur PyPI
 ```
 
 Ou depuis les sources (compile la DLL puis installe) :
@@ -154,10 +154,6 @@ python build_package.py --install
 > compilez le `.so` vous-meme avec la ligne gcc ci-dessus (le package affiche
 > la commande exacte si la lib manque). Le JIT est désormais portable
 > (voir `src/spur_posix.c` pour le portage POSIX : mmap/mprotect, System V ABI).
-
-def gelu(x):
-    """GELU approximatif AVX2. Erreur max 0.079 sur [-2, 2], sature proprement au-dela."""
-```
 
 ## Training (backprop)
 
