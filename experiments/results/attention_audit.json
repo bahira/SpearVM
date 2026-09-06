@@ -1,0 +1,343 @@
+{
+  "verdicts": [
+    {
+      "claim": "KV dense a 1M tokens (48 couches, d=2560, bf16)",
+      "stated": "457.7 GB (\u00a71) et 468.75 GB (tableau \u00a74.1)",
+      "measured": "491.5 GB = 457.8 GiB",
+      "verdict": "FAUX",
+      "note": "les deux valeurs du memoire se contredisent ; 457.7 est en GiB, 468.75 ne correspond a aucune des deux unites (impliquerait d=2441)"
+    },
+    {
+      "claim": "KV hybride a 1M tokens",
+      "stated": "750.0 MB",
+      "measured": "849.8 MB (DeltaNet 56.6 + QSA actifs 25.2 + index compresse 768.0)",
+      "verdict": "FAUX",
+      "note": "l'index compresse N/4 x 128 x 2 o par couche QSA vaut a lui seul 768 MB : il domine le budget et depasse deja le total annonce"
+    },
+    {
+      "claim": "Facteur de reduction du KV cache a 1M",
+      "stated": "625.00x",
+      "measured": "578.4x (avec les formules du memoire lui-meme)",
+      "verdict": "FAUX",
+      "note": "468.75 GB / 750 MB = 625.0000 exactement : le facteur rond a ete pose d'abord, la ligne 'dense' retro-calculee ensuite"
+    },
+    {
+      "claim": "Le budget O(1) est-il atteignable ?",
+      "stated": "empreinte O(1) + O(k.B.d)",
+      "measured": "oui si l'index est borne au budget : 83.4 MB soit 5896x",
+      "verdict": "NUANCE",
+      "note": "mais alors le routage ne peut plus consulter tout le passe : l'index en O(N) est precisement ce qui rend la selection globale"
+    },
+    {
+      "claim": "FLOPs attention dense a 1M tokens",
+      "stated": "582.40 PFLOPs",
+      "measured": "491.5 PFLOPs pour l'attention seule (4N^2.d.L)",
+      "verdict": "NUANCE",
+      "note": "l'ordre de grandeur tient ; l'ecart vient de la part MoE, que le memoire ne detaille pas \u2014 la formule n'est pas reproductible en l'etat"
+    },
+    {
+      "claim": "Acceleration calcul a 1M tokens",
+      "stated": "72.26x",
+      "measured": "impliquerait 6.80 PFLOPs hybrides ; non verifiable ici (1M tokens ne tient pas sur cette machine)",
+      "verdict": "LACUNE",
+      "note": "seule la coherence interne du ratio a ete verifiee"
+    },
+    {
+      "claim": "kappa du produit des matrices de melange projetees (L=48)",
+      "stated": "1.0000000000000056",
+      "measured": "1.0000000000000058 (sigma_min=0.999999999999995, sigma_max=1.000000000000001)",
+      "verdict": "TENU",
+      "note": "resultat trivial : un produit de matrices orthogonales est orthogonal \u2014 la SVD n'ajoute rien a la garantie"
+    },
+    {
+      "claim": "Propagation x_{l+1} = (1/sqrt2)(Pi x_l + F(Pi x_l)) avec F=0",
+      "stated": "isometrie, ni evanouissement ni explosion sur L arbitraire",
+      "measured": "||x_L||/||x_0|| = 5.960e-08 (attendu 2^(-L/2) = 5.960e-08)",
+      "verdict": "FAUX",
+      "note": "le facteur 1/sqrt(2) ecrit dans l'equation contracte le signal d'un facteur 2 par couche : l'equation du memoire contredit son propre theoreme d'isometrie"
+    },
+    {
+      "claim": "kappa de la jacobienne complete (terme residuel inclus)",
+      "stated": "kappa(J_global) = 1.000 -> gradient ni evanescent ni explosif",
+      "measured": "1.602e+18 (sigma_min=2.762e-05, sigma_max=4.426e+13)",
+      "verdict": "FAUX",
+      "note": "la contrainte de Stiefel ne porte que sur H_l ; la jacobienne de couche est (1/sqrt2)(I + F') Pi(H), dont le conditionnement n'est pas 1. Le theoreme demontre une propriete de H, pas du reseau"
+    },
+    {
+      "claim": "Denomination 'variete de Stiefel compacte St(M,M)'",
+      "stated": "St(M, M) = {X : X^T X = I_M}",
+      "measured": "St(n,p) avec n=p est le groupe orthogonal O(M), pas une variete de Stiefel au sens usuel (p < n)",
+      "verdict": "NUANCE",
+      "note": "vocabulaire ; la projection W_U W_V^T elle-meme est correcte"
+    },
+    {
+      "claim": "Coherence entre l'equation (2.1) et le listing (section 3)",
+      "stated": "les deux presentent la meme regle Delta",
+      "measured": "operateurs differents : listing g(I - beta k k^T) contre equation (g I - beta k k^T). Sur g=0.9 beta=1.95, ||S|| apres 600 pas a entree nulle : listing 0.00e+00, equation 9.60e+12",
+      "verdict": "FAUX",
+      "note": "la porte est appliquee avant le calcul de l'erreur dans le code, apres dans le texte ; ce detail decide de la stabilite"
+    },
+    {
+      "claim": "Stabilite BIBO annoncee : g in [0,1[, beta in ]0,2[",
+      "stated": "toujours stable sur ce domaine",
+      "measured": "listing : stable partout (0/7 couples divergents) ; equation du texte : 4/7 couples divergents, ex. g=0.9 beta=1.95 -> rho=1.05, ||S|| 2.05 -> 9.60e+12",
+      "verdict": "NUANCE",
+      "note": "l'affirmation est vraie pour le code livre (rayon g < 1 pour tout beta dans ]0,2[), fausse pour l'equation du memoire, dont la condition correcte est beta < 1 + g"
+    },
+    {
+      "claim": "Certificat de Lyapunov Delta V <= 0 (section 2.1)",
+      "stated": "-(1-g)||S||^2 + beta||v|| ||S|| + beta^2||v||^2/2",
+      "measured": "la borne n'est pas homogene : le terme quadratique en ||S|| devrait porter le facteur (1 - g^2)/2 pour la variante du listing, et (1 - (g-beta)^2)/2 dans la direction de la cle pour celle du texte",
+      "verdict": "NUANCE",
+      "note": "la conclusion (etat borne) est correcte pour le listing, mais la derivation affichee ne la demontre pas"
+    },
+    {
+      "claim": "ReplaySSM : residu |Delta|_inf",
+      "stated": "0.0000e+00 (exactitude machine)",
+      "measured": "0.0000e+00 sur T=256, 16 checkpoints",
+      "verdict": "TENU",
+      "note": "attendu : rejouer la meme sequence d'operations flottantes dans le meme ordre donne un resultat bit-a-bit identique. C'est un test de determinisme, pas de precision numerique \u2014 le presenter comme une preuve d'exactitude algebrique est trompeur"
+    },
+    {
+      "claim": "Facteur de compression memoire ReplaySSM",
+      "stated": "128x par checkpointing",
+      "measured": "mesure ici : T/chunk = 16x de checkpoints en moins, au prix d'un rejeu de <= 16 pas par acces",
+      "verdict": "NUANCE",
+      "note": "compromis memoire/calcul classique ; le facteur depend du pas de checkpoint choisi, ce n'est pas une propriete du modele"
+    },
+    {
+      "claim": "W8A8 : SQNR et erreur relative de Frobenius",
+      "stated": "39.14 dB et 1.104 %",
+      "measured": "35.42 dB / 1.695 % (per-tensor), 39.10 dB (per-canal)",
+      "verdict": "NUANCE",
+      "note": "le 39.14 dB n'est reproductible qu'en quantification **par canal**, que le memoire ne mentionne pas ; en per-tensor on perd ~3.7 dB. Et les deux chiffres annonces sont la meme mesure exprimee deux fois : SQNR = -20 log10(1.104 %) = 39.14 dB, pas deux validations"
+    },
+    {
+      "claim": "Muon : orthogonalisation par Newton-Schulz cubique (6 iterations)",
+      "stated": "orthogonalisation continue des matrices de poids 2D",
+      "measured": "defaut ||X^T X - I||_F/sqrt(p) : 6 iter -> 0.5210, 10 iter -> 0.0165, 15 iter -> 0.0000, 30 iter -> 0.0000",
+      "verdict": "FAUX",
+      "note": "la normalisation par ||G||_F du listing tasse les valeurs singulieres dans [0.026, 0.150] ; l'iteration cubique ne les multiplie que par ~1.5 par pas. Il en faut une quinzaine pour orthogonaliser : le listing s'arrete a 6 et rend une matrice qui n'est pas orthogonale"
+    },
+    {
+      "claim": "La variante quintique (le vrai Muon) corrige-t-elle le probleme ?",
+      "stated": "'iteration de Newton-Schulz d'ordre 3/5' (le listing n'a que l'ordre 3)",
+      "measured": "quintique (3.4445, -4.7750, 2.0315) : 5 iter -> 0.3688, 10 iter -> 0.3424, 30 iter -> 0.3434",
+      "verdict": "NUANCE",
+      "note": "elle amene les valeurs singulieres pres de 1 en 5 pas mais plafonne a un defaut ~0.35 : Muon ne cherche pas une orthogonalite exacte, seulement une direction de descente bien conditionnee. Parler d'orthogonalisation exacte est donc faux dans les deux cas"
+    },
+    {
+      "claim": "Causalite du listing QSA",
+      "stated": "attention causale (modele autoregressif)",
+      "measured": "le listing attend sur les 4 tokens du bloc courant, y compris les positions futures : ecart avec la version masquee = 1.997",
+      "verdict": "FAUX",
+      "note": "fuite d'information de 3 tokens au maximum a chaque position ; corrigible par un masque intra-bloc (fourni en variante `_fixed`)"
+    },
+    {
+      "claim": "Fidelite du routage IndexPool 4:1",
+      "stated": "aucune metrique de fidelite n'est donnee dans le memoire",
+      "measured": "masse d'attention exacte capturee : 59.5 % en moyenne, 24.8 % au pire ; ecart max a l'attention dense 8.3 % (budget 256 tokens sur N=1024)",
+      "verdict": "LACUNE",
+      "note": "le memoire chiffre la memoire economisee mais jamais la perte d'information : c'est pourtant le seul arbitrage qui compte"
+    },
+    {
+      "claim": "Debit de lookup de la table N-grammes",
+      "stated": "11 372 tokens/seconde par canal hote",
+      "measured": "1.97 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 33.2 ms)",
+      "verdict": "FAUX",
+      "note": "un lookup hache est une lecture memoire : 11 k/s correspondrait a 14 MB/s, trois ordres de grandeur sous une DRAM et loin sous PCIe Gen5. Le chiffre annonce est soit un cas NVMe non precise, soit faux"
+    },
+    {
+      "claim": "Table N-grammes : parametres et empreinte",
+      "stated": "51 B parametres, 25.6 GB en INT4, 0 FLOP",
+      "measured": "51.2 B parametres, 25.6 GB en INT4, 0 FLOP matriciel (lecture indexee)",
+      "verdict": "TENU",
+      "note": "arithmetique exacte ; en revanche compter une table de hachage comme 51 B 'parametres' du modele est une convention discutable"
+    },
+    {
+      "claim": "Loi d'Amdahl (p=0.88, s=24.5)",
+      "stated": "6.41x",
+      "measured": "6.414x",
+      "verdict": "TENU",
+      "note": "arithmetique correcte ; en revanche la conclusion 'saturation a 85 % de la puissance crete' ne decoule pas de ce calcul et n'est etayee par aucune mesure"
+    },
+    {
+      "claim": "Complexite reelle du routage QSA",
+      "stated": "attention creuse, budget borne a 2048 tokens -> cout lineaire",
+      "measured": "cout mesure en N^1.92 : chaque bloc score **tous** les blocs passes (N/4 produits scalaires) avant d'en retenir 512",
+      "verdict": "FAUX",
+      "note": "la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. Il faudrait un index hierarchique, absent du memoire"
+    },
+    {
+      "claim": "Les benchmarks a 1M tokens ont-ils ete executes ?",
+      "stated": "'les benchmarks numeriques NumPy conduits dans ce travail prouvent formellement' 625x et 72.3x a 1M tokens",
+      "measured": "avec le listing fourni : QSA 78 h pour UNE couche et UNE passe, DeltaNet 14.0 h pour ses 36 couches (1396 us/token) \u2014 soit > 100 h par passe avant",
+      "verdict": "FAUX",
+      "note": "les lignes 262k et 1M du tableau 4.1 ne peuvent pas etre des mesures : ce sont des sorties de modele analytique. Les presenter comme des benchmarks executes est le probleme central du document"
+    }
+  ],
+  "donnees": {
+    "kv": {
+      "dense_gb": 491.52,
+      "hybride_mb": 849.788928,
+      "facteur": 578.4024524263983
+    },
+    "flops": {
+      "dense_pflops": 491.52
+    },
+    "mhc": {
+      "kappa_lineaire": 1.0000000000000058,
+      "kappa_complet": 1.6023838159901228e+18,
+      "contraction": 5.960464477539025e-08
+    },
+    "deltanet": {
+      "grille": [
+        {
+          "g": 0.9,
+          "beta": 0.5,
+          "rho_listing": 0.9,
+          "rho_equation": 0.9
+        },
+        {
+          "g": 0.9,
+          "beta": 1.0,
+          "rho_listing": 0.9,
+          "rho_equation": 0.9
+        },
+        {
+          "g": 0.9,
+          "beta": 1.5,
+          "rho_listing": 0.9,
+          "rho_equation": 0.9
+        },
+        {
+          "g": 0.9,
+          "beta": 1.95,
+          "rho_listing": 0.9,
+          "rho_equation": 1.05
+        },
+        {
+          "g": 0.5,
+          "beta": 1.9,
+          "rho_listing": 0.5,
+          "rho_equation": 1.4
+        },
+        {
+          "g": 0.99,
+          "beta": 1.99,
+          "rho_listing": 0.99,
+          "rho_equation": 1.0
+        },
+        {
+          "g": 0.999,
+          "beta": 1.999,
+          "rho_listing": 0.999,
+          "rho_equation": 1.0
+        }
+      ],
+      "trajectoires": {
+        "g=0.9,beta=0.5": {
+          "code": {
+            "debut": 0.2250000238418579,
+            "fin": 0.0,
+            "rho": 0.9
+          },
+          "text": {
+            "debut": 0.20000001788139343,
+            "fin": 0.0,
+            "rho": 0.9
+          }
+        },
+        "g=0.9,beta=1.95": {
+          "code": {
+            "debut": 1.6672488451004028,
+            "fin": 0.0,
+            "rho": 0.9
+          },
+          "text": {
+            "debut": 2.047499179840088,
+            "fin": 9601325989888.0,
+            "rho": 1.0499999999999998
+          }
+        },
+        "g=0.99,beta=1.99": {
+          "code": {
+            "debut": 1.9503978490829468,
+            "fin": 1.1740880836441647e-05,
+            "rho": 0.99
+          },
+          "text": {
+            "debut": 1.989998698234558,
+            "fin": 1.9894366264343262,
+            "rho": 1.0
+          }
+        }
+      }
+    },
+    "replay": {
+      "residu_inf": 0.0,
+      "checkpoints": 16
+    },
+    "quant": {
+      "sqnr_per_tensor": 35.41689179130329,
+      "sqnr_per_channel": 39.096898532398924,
+      "rel": 0.01694944220525163
+    },
+    "muon": {
+      "bien conditionne": {
+        "1": 0.982637,
+        "3": 0.918298,
+        "6": 0.521316,
+        "12": 7e-06,
+        "30": 0.0
+      },
+      "mal conditionne (cond=1e4)": {
+        "1": 0.984392,
+        "3": 0.950616,
+        "6": 0.87989,
+        "12": 0.715716,
+        "30": 0.0
+      },
+      "rang deficient (rang 64/128)": {
+        "1": 0.983106,
+        "3": 0.929918,
+        "6": 0.765666,
+        "12": 0.707107,
+        "30": 0.707107
+      },
+      "cubique": {
+        "6": 0.521042,
+        "10": 0.016544,
+        "15": 0.0,
+        "30": 0.0
+      },
+      "quintique": {
+        "5": 0.36876,
+        "10": 0.342386,
+        "30": 0.343414
+      },
+      "quintique_5": 0.36876,
+      "sigma_apres_normalisation_F": [
+        0.026264210366911307,
+        0.14965386642446632
+      ]
+    },
+    "qsa": {
+      "ecart_causalite": 1.9973232746124268,
+      "recall_moyen": 0.5951827609098856,
+      "recall_min": 0.2475480900486045
+    },
+    "ngram": {
+      "debit_ram_tok_s": 1973408.4298472647
+    },
+    "amdahl": {
+      "amdahl": 6.413612565445027
+    },
+    "runtime": {
+      "exposant_qsa": 1.9213305911509704,
+      "qsa_1m_h": 77.90270531336745,
+      "deltanet_us_par_token": 1396.321821289348,
+      "deltanet_1m_36c_h": 13.96321821289348
+    }
+  }
+}

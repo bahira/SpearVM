@@ -1,0 +1,130 @@
+==============================================================================
+AUDIT MESURE — Theorie unifiee des architectures d'attention hybrides
+==============================================================================
+
+--- kv --------------------------------------------------------------------
+[FAUX  ] KV dense a 1M tokens (48 couches, d=2560, bf16)
+         annonce : 457.7 GB (§1) et 468.75 GB (tableau §4.1)
+         mesure  : 491.5 GB = 457.8 GiB
+         -> les deux valeurs du memoire se contredisent ; 457.7 est en GiB, 468.75 ne correspond a aucune des deux unites (impliquerait d=2441)
+[FAUX  ] KV hybride a 1M tokens
+         annonce : 750.0 MB
+         mesure  : 849.8 MB (DeltaNet 56.6 + QSA actifs 25.2 + index compresse 768.0)
+         -> l'index compresse N/4 x 128 x 2 o par couche QSA vaut a lui seul 768 MB : il domine le budget et depasse deja le total annonce
+[FAUX  ] Facteur de reduction du KV cache a 1M
+         annonce : 625.00x
+         mesure  : 578.4x (avec les formules du memoire lui-meme)
+         -> 468.75 GB / 750 MB = 625.0000 exactement : le facteur rond a ete pose d'abord, la ligne 'dense' retro-calculee ensuite
+[NUANCE] Le budget O(1) est-il atteignable ?
+         annonce : empreinte O(1) + O(k.B.d)
+         mesure  : oui si l'index est borne au budget : 83.4 MB soit 5896x
+         -> mais alors le routage ne peut plus consulter tout le passe : l'index en O(N) est precisement ce qui rend la selection globale
+
+--- flops -----------------------------------------------------------------
+[NUANCE] FLOPs attention dense a 1M tokens
+         annonce : 582.40 PFLOPs
+         mesure  : 491.5 PFLOPs pour l'attention seule (4N^2.d.L)
+         -> l'ordre de grandeur tient ; l'ecart vient de la part MoE, que le memoire ne detaille pas — la formule n'est pas reproductible en l'etat
+[LACUNE] Acceleration calcul a 1M tokens
+         annonce : 72.26x
+         mesure  : impliquerait 6.80 PFLOPs hybrides ; non verifiable ici (1M tokens ne tient pas sur cette machine)
+         -> seule la coherence interne du ratio a ete verifiee
+
+--- mhc -------------------------------------------------------------------
+[TENU  ] kappa du produit des matrices de melange projetees (L=48)
+         annonce : 1.0000000000000056
+         mesure  : 1.0000000000000058 (sigma_min=0.999999999999995, sigma_max=1.000000000000001)
+         -> resultat trivial : un produit de matrices orthogonales est orthogonal — la SVD n'ajoute rien a la garantie
+[FAUX  ] Propagation x_{l+1} = (1/sqrt2)(Pi x_l + F(Pi x_l)) avec F=0
+         annonce : isometrie, ni evanouissement ni explosion sur L arbitraire
+         mesure  : ||x_L||/||x_0|| = 5.960e-08 (attendu 2^(-L/2) = 5.960e-08)
+         -> le facteur 1/sqrt(2) ecrit dans l'equation contracte le signal d'un facteur 2 par couche : l'equation du memoire contredit son propre theoreme d'isometrie
+[FAUX  ] kappa de la jacobienne complete (terme residuel inclus)
+         annonce : kappa(J_global) = 1.000 -> gradient ni evanescent ni explosif
+         mesure  : 1.602e+18 (sigma_min=2.762e-05, sigma_max=4.426e+13)
+         -> la contrainte de Stiefel ne porte que sur H_l ; la jacobienne de couche est (1/sqrt2)(I + F') Pi(H), dont le conditionnement n'est pas 1. Le theoreme demontre une propriete de H, pas du reseau
+[NUANCE] Denomination 'variete de Stiefel compacte St(M,M)'
+         annonce : St(M, M) = {X : X^T X = I_M}
+         mesure  : St(n,p) avec n=p est le groupe orthogonal O(M), pas une variete de Stiefel au sens usuel (p < n)
+         -> vocabulaire ; la projection W_U W_V^T elle-meme est correcte
+
+--- deltanet --------------------------------------------------------------
+[FAUX  ] Coherence entre l'equation (2.1) et le listing (section 3)
+         annonce : les deux presentent la meme regle Delta
+         mesure  : operateurs differents : listing g(I - beta k k^T) contre equation (g I - beta k k^T). Sur g=0.9 beta=1.95, ||S|| apres 600 pas a entree nulle : listing 0.00e+00, equation 9.60e+12
+         -> la porte est appliquee avant le calcul de l'erreur dans le code, apres dans le texte ; ce detail decide de la stabilite
+[NUANCE] Stabilite BIBO annoncee : g in [0,1[, beta in ]0,2[
+         annonce : toujours stable sur ce domaine
+         mesure  : listing : stable partout (0/7 couples divergents) ; equation du texte : 4/7 couples divergents, ex. g=0.9 beta=1.95 -> rho=1.05, ||S|| 2.05 -> 9.60e+12
+         -> l'affirmation est vraie pour le code livre (rayon g < 1 pour tout beta dans ]0,2[), fausse pour l'equation du memoire, dont la condition correcte est beta < 1 + g
+[NUANCE] Certificat de Lyapunov Delta V <= 0 (section 2.1)
+         annonce : -(1-g)||S||^2 + beta||v|| ||S|| + beta^2||v||^2/2
+         mesure  : la borne n'est pas homogene : le terme quadratique en ||S|| devrait porter le facteur (1 - g^2)/2 pour la variante du listing, et (1 - (g-beta)^2)/2 dans la direction de la cle pour celle du texte
+         -> la conclusion (etat borne) est correcte pour le listing, mais la derivation affichee ne la demontre pas
+
+--- replay ----------------------------------------------------------------
+[TENU  ] ReplaySSM : residu |Delta|_inf
+         annonce : 0.0000e+00 (exactitude machine)
+         mesure  : 0.0000e+00 sur T=256, 16 checkpoints
+         -> attendu : rejouer la meme sequence d'operations flottantes dans le meme ordre donne un resultat bit-a-bit identique. C'est un test de determinisme, pas de precision numerique — le presenter comme une preuve d'exactitude algebrique est trompeur
+[NUANCE] Facteur de compression memoire ReplaySSM
+         annonce : 128x par checkpointing
+         mesure  : mesure ici : T/chunk = 16x de checkpoints en moins, au prix d'un rejeu de <= 16 pas par acces
+         -> compromis memoire/calcul classique ; le facteur depend du pas de checkpoint choisi, ce n'est pas une propriete du modele
+
+--- quant -----------------------------------------------------------------
+[NUANCE] W8A8 : SQNR et erreur relative de Frobenius
+         annonce : 39.14 dB et 1.104 %
+         mesure  : 35.42 dB / 1.695 % (per-tensor), 39.10 dB (per-canal)
+         -> le 39.14 dB n'est reproductible qu'en quantification **par canal**, que le memoire ne mentionne pas ; en per-tensor on perd ~3.7 dB. Et les deux chiffres annonces sont la meme mesure exprimee deux fois : SQNR = -20 log10(1.104 %) = 39.14 dB, pas deux validations
+
+--- muon ------------------------------------------------------------------
+[FAUX  ] Muon : orthogonalisation par Newton-Schulz cubique (6 iterations)
+         annonce : orthogonalisation continue des matrices de poids 2D
+         mesure  : defaut ||X^T X - I||_F/sqrt(p) : 6 iter -> 0.5210, 10 iter -> 0.0165, 15 iter -> 0.0000, 30 iter -> 0.0000
+         -> la normalisation par ||G||_F du listing tasse les valeurs singulieres dans [0.026, 0.150] ; l'iteration cubique ne les multiplie que par ~1.5 par pas. Il en faut une quinzaine pour orthogonaliser : le listing s'arrete a 6 et rend une matrice qui n'est pas orthogonale
+[NUANCE] La variante quintique (le vrai Muon) corrige-t-elle le probleme ?
+         annonce : 'iteration de Newton-Schulz d'ordre 3/5' (le listing n'a que l'ordre 3)
+         mesure  : quintique (3.4445, -4.7750, 2.0315) : 5 iter -> 0.3688, 10 iter -> 0.3424, 30 iter -> 0.3434
+         -> elle amene les valeurs singulieres pres de 1 en 5 pas mais plafonne a un defaut ~0.35 : Muon ne cherche pas une orthogonalite exacte, seulement une direction de descente bien conditionnee. Parler d'orthogonalisation exacte est donc faux dans les deux cas
+
+--- qsa -------------------------------------------------------------------
+[FAUX  ] Causalite du listing QSA
+         annonce : attention causale (modele autoregressif)
+         mesure  : le listing attend sur les 4 tokens du bloc courant, y compris les positions futures : ecart avec la version masquee = 1.997
+         -> fuite d'information de 3 tokens au maximum a chaque position ; corrigible par un masque intra-bloc (fourni en variante `_fixed`)
+[LACUNE] Fidelite du routage IndexPool 4:1
+         annonce : aucune metrique de fidelite n'est donnee dans le memoire
+         mesure  : masse d'attention exacte capturee : 59.5 % en moyenne, 24.8 % au pire ; ecart max a l'attention dense 8.3 % (budget 256 tokens sur N=1024)
+         -> le memoire chiffre la memoire economisee mais jamais la perte d'information : c'est pourtant le seul arbitrage qui compte
+
+--- ngram -----------------------------------------------------------------
+[FAUX  ] Debit de lookup de la table N-grammes
+         annonce : 11 372 tokens/seconde par canal hote
+         mesure  : 1.97 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 33.2 ms)
+         -> un lookup hache est une lecture memoire : 11 k/s correspondrait a 14 MB/s, trois ordres de grandeur sous une DRAM et loin sous PCIe Gen5. Le chiffre annonce est soit un cas NVMe non precise, soit faux
+[TENU  ] Table N-grammes : parametres et empreinte
+         annonce : 51 B parametres, 25.6 GB en INT4, 0 FLOP
+         mesure  : 51.2 B parametres, 25.6 GB en INT4, 0 FLOP matriciel (lecture indexee)
+         -> arithmetique exacte ; en revanche compter une table de hachage comme 51 B 'parametres' du modele est une convention discutable
+
+--- amdahl ----------------------------------------------------------------
+[TENU  ] Loi d'Amdahl (p=0.88, s=24.5)
+         annonce : 6.41x
+         mesure  : 6.414x
+         -> arithmetique correcte ; en revanche la conclusion 'saturation a 85 % de la puissance crete' ne decoule pas de ce calcul et n'est etayee par aucune mesure
+
+--- runtime ---------------------------------------------------------------
+[FAUX  ] Complexite reelle du routage QSA
+         annonce : attention creuse, budget borne a 2048 tokens -> cout lineaire
+         mesure  : cout mesure en N^1.92 : chaque bloc score **tous** les blocs passes (N/4 produits scalaires) avant d'en retenir 512
+         -> la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. Il faudrait un index hierarchique, absent du memoire
+[FAUX  ] Les benchmarks a 1M tokens ont-ils ete executes ?
+         annonce : 'les benchmarks numeriques NumPy conduits dans ce travail prouvent formellement' 625x et 72.3x a 1M tokens
+         mesure  : avec le listing fourni : QSA 78 h pour UNE couche et UNE passe, DeltaNet 14.0 h pour ses 36 couches (1396 us/token) — soit > 100 h par passe avant
+         -> les lignes 262k et 1M du tableau 4.1 ne peuvent pas etre des mesures : ce sont des sorties de modele analytique. Les presenter comme des benchmarks executes est le probleme central du document
+
+==============================================================================
+SYNTHESE : FAUX 11 | LACUNE 2 | NUANCE 8 | TENU 4
+==============================================================================
+-> results/attention_audit.json
