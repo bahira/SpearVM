@@ -65,23 +65,43 @@ pip install spur-math
 
 `sm.matmul_nt(A, B)` — C = A·Bᵀ, convention BLAS NT, double précision.
 
-- **Tuillage cache** KC×NC (512 Ko/tuile en L2) + blocage registres 4 lignes,
-  4 chaînes FMA indépendantes, OpenMP
-- err ≤ 1.4e-13 vs numpy sur toutes tailles (512→2048), y compris queues m%4
-- `matmul_nt_gelu` : activation fusionnée — la gelu est non linéaire donc k
-  n'est pas coupé, seulement le blocage colonnes
+Depuis v0.6, deux micro-noyaux **autotunés** (902 variantes générées,
+vérifiées et chronométrées — voir [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md))
+coexistent derrière la même API, avec un aiguillage calibré par la mesure :
 
-| Cas | SpearVM | numpy BLAS |
-|---|---|---|
-| carré 512 | 24.5 GFLOPS | 48.2 GFLOPS (×0.51) |
-| carré 1024 | 13.9 GFLOPS | 18.0 GFLOPS (×0.77) |
-| carré 2048 | 10.3 GFLOPS | 23.5 GFLOPS (×0.44) |
-| **FFN 1024×768×3072 fusionné gelu** | **353 ms** | **858 ms (×2.43)** |
+- **[P] packé** — micro-noyau *broadcast* façon BLIS (f64 4×12, f32 4×24) :
+  A et B recopiés en panneaux contigus, zéro réduction horizontale.
+- **[D] dot-block** — **sans packing** (3×4) : en convention NT, k est contigu
+  des deux côtés, donc rien à copier. Gagnant dès qu'une dimension est étroite.
+- aiguillage `legacy / dot / pack` choisi sous contrainte **« aucune
+  régression »** ; `MC` s'adapte au nombre de threads ; `SPUR_MM_LEGACY=1`
+  restaure l'ancien noyau.
+- err ≤ 1.5e-15 (f64) / 8.3e-07 (f32) sur 324 formes par précision
+  (`tests/test_matmul_v2.py`), y compris toutes les queues m%MR, n%NR, k%KC.
 
-Lecture honnête : en GEMM carré pur, OpenBLAS/MKL reste devant (packing AVX,
-microkernels plus larges). Là où SpearVM gagne, c'est le **pipeline fusionné**
-— un passage au lieu de deux, zéro buffer intermédiaire — et l'intégration
-NT sans copies.
+Mesuré sur 2 vCPU AVX2 (1 thread, numpy chronométré séparément,
+`experiments/verify_port.py`) :
+
+| Cas (f64) | v0.5 | **v0.6** | numpy BLAS |
+|---|---|---|---|
+| carré 512 | 20.8 GF | **43.3 GF** (×2.09) | 58.9 GF |
+| carré 1024 | 18.2 GF | **41.4 GF** (×2.28) | 63.5 GF |
+| 512×64×512 (k court) | 21.1 GF | **45.0 GF** (×2.13) | 43.1 GF (**×1.04**) |
+| 512×16×512 (k très court) | 13.0 GF | **38.4 GF** (×2.95) | 25.8 GF (**×1.49**) |
+| 2048×128×128 | 24.8 GF | **43.2 GF** (×1.74) | 41.6 GF (**×1.04**) |
+
+Gain médian sur 20 formes : **×1.78 (f64)** et **×1.50 (f32)** en mono-thread,
+×1.43 / ×1.30 sur 2 threads, **sans aucune régression** (pire cas ×1.00).
+`matmul_nt_gelu` gagne **×2.23 (f64)** / **×2.34 (f32)** de médiane : la
+fusion de la gelu dans la boucle j interdisait de couper k, donc interdisait le
+micro-noyau packé ; un épilogue vectorisé coûte bien moins cher.
+Bout-en-bout, une itération d'entraînement MLP 784-256-128-10 passe de
+14.3 ms à **7.5 ms** (f64, `experiments/bench_mlp.py`).
+
+Lecture honnête : en GEMM carré pur, OpenBLAS/MKL reste devant (0.65–0.73× ici,
+contre 0.36× avant cette campagne). Là où SpearVM passe devant, c'est sur les
+formes que BLAS amortit mal — **k court, dimension étroite** — et sur le
+**pipeline fusionné** NT sans copies.
 
 ## Pipeline NN end-to-end (bench_nn)
 

@@ -1,0 +1,27 @@
+[st] OMP_NUM_THREADS=1
+
+           forme   legacy       v2    gain   f64
+     128x784x256     20.2     38.3    1.90   ecart 1.3e-15
+     256x256x256     17.2     41.2    2.39   ecart 8.9e-16
+     384x384x384     19.1     42.6    2.23   ecart 1.3e-15
+     512x512x512     20.3     42.8    2.10   ecart 1.9e-15
+   1024x768x1024     20.9     43.2    2.06   ecart 1.9e-15
+     64x3072x768     12.4     34.3    2.76   ecart 1.6e-15
+     32x768x3072     19.6     26.7    1.36   ecart 0.0e+00
+    2048x128x128     13.0     40.3    3.09   ecart 6.8e-16
+      512x64x512      8.9     40.2    4.52   ecart 7.0e-16
+
+           forme   legacy       v2    gain   f32
+     128x784x256     50.8     76.4    1.50   ecart 4.7e-07
+     256x256x256     27.9     81.1    2.91   ecart 5.2e-07
+     384x384x384     33.6     85.8    2.56   ecart 6.9e-07
+     512x512x512     36.5     85.4    2.34   ecart 8.7e-07
+   1024x768x1024     40.3     87.7    2.18   ecart 7.9e-07
+     64x3072x768     40.9     67.3    1.65   ecart 5.4e-07
+     32x768x3072     40.2     44.6    1.11   ecart 2.5e-07
+    2048x128x128     17.3     71.1    4.11   ecart 3.9e-07
+      512x64x512     11.7     80.4    6.85   ecart 3.3e-07
+
+  f64: gain median x2.23 (min x1.36, max x4.52)
+  f32: gain median x2.34 (min x1.11, max x6.85)
+-> /home/user/SpearVM/experiments/results/gelu_fused_st.csv

@@ -437,9 +437,9 @@ void spur_matmul_nt_legacy(const double* A,const double* B,double* C,
 /* Variante fusionnee : C = gelu(A . B^T). La gelu est non-lineaire :
    k ne peut PAS etre coupe -> blocage colonnes seul (tuile B de NC x k
    reste chaude pendant le sweep des lignes de A).                          */
-void spur_matmul_nt_gelu(const double* A,const double* B,
-                         const double* bias,double* C,
-                         long long m,long long k,long long n){
+void spur_matmul_nt_gelu_legacy(const double* A,const double* B,
+                                const double* bias,double* C,
+                                long long m,long long k,long long n){
     /* bias : NULL = sans biais, sinon tableau de n (ajoute AVANT gelu)   */
     for(long long jb=0;jb<n;jb+=MM_NC){
         const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
@@ -693,9 +693,9 @@ void spur_matmul_nt_f32_legacy(const float* A,const float* B,float* C,
     }
 }
 
-void spur_matmul_nt_gelu_f32(const float* A,const float* B,
-                             const float* bias,float* C,
-                             long long m,long long k,long long n){
+void spur_matmul_nt_gelu_f32_legacy(const float* A,const float* B,
+                                    const float* bias,float* C,
+                                    long long m,long long k,long long n){
     for(long long jb=0;jb<n;jb+=MM_NC){
         const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
         #pragma omp parallel for schedule(static)
@@ -1313,4 +1313,74 @@ void spur_matmul_nt_f32(const float* A, const float* B, float* C,
         case SPUR_MM_ROUTE_PACK: spur_gemm_pack_f32(A, B, C, m, k, n); break;
         default:                 spur_matmul_nt_f32_legacy(A, B, C, m, k, n); break;
     }
+}
+
+/* ============================================================================
+   GEMM + GELU v2 : GEMM autotune suivi d'un epilogue biais+gelu vectorise.
+   ----------------------------------------------------------------------------
+   L'ancien noyau fusionnait la gelu dans la boucle j pour eviter une relecture
+   de C. Mesure : cette fusion coute bien plus cher qu'elle ne rapporte, parce
+   qu'elle interdit le blocage en k (donc le micro-noyau packe). L'epilogue
+   relit m*n elements — memoire pure, quelques % — tandis que le GEMM gagne un
+   facteur ~2. On garde l'ancien chemin sous *_legacy (et SPUR_MM_LEGACY=1).
+   ========================================================================== */
+
+static void spur_gelu_bias_rows_f64(double* C, long long m, long long n,
+                                    const double* bias){
+    const __m256d c306 = _mm256_set1_pd(0.306923), c501 = _mm256_set1_pd(0.501);
+    const __m256d cmax = _mm256_set1_pd(1.002),   zero = _mm256_setzero_pd();
+    const __m256d ck   = _mm256_set1_pd(0.997729), cb  = _mm256_set1_pd(-0.004004);
+    const int hb = (bias != NULL);
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < m; i++){
+        double* row = C + i*n;
+        long long j = 0;
+        for (; j + 3 < n; j += 4){
+            __m256d x = _mm256_loadu_pd(row + j);
+            if (hb) x = _mm256_add_pd(x, _mm256_loadu_pd(bias + j));
+            __m256d u = _mm256_fmadd_pd(c306, x, c501);
+            u = _mm256_min_pd(_mm256_max_pd(u, zero), cmax);
+            _mm256_storeu_pd(row + j,
+                             _mm256_add_pd(_mm256_mul_pd(_mm256_mul_pd(x, u), ck), cb));
+        }
+        for (; j < n; j++) row[j] = gelu_s(row[j] + (hb ? bias[j] : 0.0));
+    }
+}
+
+static void spur_gelu_bias_rows_f32(float* C, long long m, long long n,
+                                    const float* bias){
+    const __m256 c306 = _mm256_set1_ps(0.306923f), c501 = _mm256_set1_ps(0.501f);
+    const __m256 cmax = _mm256_set1_ps(1.002f),   zero = _mm256_setzero_ps();
+    const __m256 ck   = _mm256_set1_ps(0.997729f), cb  = _mm256_set1_ps(-0.004004f);
+    const int hb = (bias != NULL);
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < m; i++){
+        float* row = C + i*n;
+        long long j = 0;
+        for (; j + 7 < n; j += 8){
+            __m256 x = _mm256_loadu_ps(row + j);
+            if (hb) x = _mm256_add_ps(x, _mm256_loadu_ps(bias + j));
+            __m256 u = _mm256_fmadd_ps(c306, x, c501);
+            u = _mm256_min_ps(_mm256_max_ps(u, zero), cmax);
+            _mm256_storeu_ps(row + j,
+                             _mm256_add_ps(_mm256_mul_ps(_mm256_mul_ps(x, u), ck), cb));
+        }
+        for (; j < n; j++) row[j] = gelu_f32_scalar(row[j] + (hb ? bias[j] : 0.0f));
+    }
+}
+
+void spur_matmul_nt_gelu(const double* A, const double* B, const double* bias,
+                         double* C, long long m, long long k, long long n){
+    if (m <= 0 || n <= 0) return;
+    if (spur_mm_legacy()){ spur_matmul_nt_gelu_legacy(A, B, bias, C, m, k, n); return; }
+    spur_matmul_nt(A, B, C, m, k, n);
+    spur_gelu_bias_rows_f64(C, m, n, bias);
+}
+
+void spur_matmul_nt_gelu_f32(const float* A, const float* B, const float* bias,
+                             float* C, long long m, long long k, long long n){
+    if (m <= 0 || n <= 0) return;
+    if (spur_mm_legacy()){ spur_matmul_nt_gelu_f32_legacy(A, B, bias, C, m, k, n); return; }
+    spur_matmul_nt_f32(A, B, C, m, k, n);
+    spur_gelu_bias_rows_f32(C, m, n, bias);
 }

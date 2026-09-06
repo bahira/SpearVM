@@ -100,3 +100,50 @@ def test_backward_still_consistent():
     dA, dB = sm.matmul_backward(dY, A, B)
     assert _rel_err(dA, dY @ B) <= 1e-13
     assert _rel_err(dB, dY.T @ A) <= 1e-13
+
+
+# --- GEMM + GELU fusionne (v2 = gemm autotune + epilogue vectorise) ---------
+for _n, _p in (("spur_matmul_nt_gelu_legacy", _PD), ("spur_matmul_nt_gelu_f32_legacy", _PF)):
+    _fn = getattr(_DLL, _n)
+    _fn.argtypes = [_p, _p, ctypes.c_void_p, _p] + [ctypes.c_longlong] * 3
+    _fn.restype = None
+
+
+def _gelu_ref(x):
+    """Formule SPEAR de reference (datasheet), en float64."""
+    u = np.clip(0.306923 * x + 0.501, 0.0, 1.002)
+    return 0.997729 * (x * u) - 0.004004
+
+
+@pytest.mark.parametrize("dtype,tol", [(np.float64, 1e-13), (np.float32, 5e-6)])
+@pytest.mark.parametrize("with_bias", [False, True])
+def test_matmul_nt_gelu_matches_reference(dtype, tol, with_bias):
+    rng = np.random.default_rng(5)
+    for (m, k, n) in [(37, 577, 41), (128, 96, 256), (7, 33, 13), (64, 3072, 96)]:
+        a = np.ascontiguousarray(rng.standard_normal((m, k)), dtype=dtype)
+        b = np.ascontiguousarray(rng.standard_normal((n, k)), dtype=dtype)
+        bias = (np.ascontiguousarray(rng.standard_normal(n), dtype=dtype)
+                if with_bias else None)
+        ref = _gelu_ref(a.astype(np.float64) @ b.astype(np.float64).T
+                        + (bias.astype(np.float64) if with_bias else 0.0))
+        got = sm.matmul_nt_gelu(a, b, bias)
+        assert np.isfinite(got).all()
+        assert _rel_err(got, ref) <= tol
+
+
+@pytest.mark.parametrize("dtype,tol", [(np.float64, 1e-13), (np.float32, 5e-6)])
+def test_matmul_nt_gelu_matches_legacy(dtype, tol):
+    """La v2 (gemm + epilogue) doit reproduire l'ancienne fusion."""
+    rng = np.random.default_rng(9)
+    p = _PF if dtype == np.float32 else _PD
+    fn = (_DLL.spur_matmul_nt_gelu_f32_legacy if dtype == np.float32
+          else _DLL.spur_matmul_nt_gelu_legacy)
+    for (m, k, n) in [(128, 256, 192), (33, 129, 65)]:
+        a = np.ascontiguousarray(rng.standard_normal((m, k)), dtype=dtype)
+        b = np.ascontiguousarray(rng.standard_normal((n, k)), dtype=dtype)
+        bias = np.ascontiguousarray(rng.standard_normal(n), dtype=dtype)
+        old = np.zeros((m, n), dtype=dtype)
+        fn(a.ctypes.data_as(p), b.ctypes.data_as(p),
+           bias.ctypes.data_as(ctypes.c_void_p), old.ctypes.data_as(p), m, k, n)
+        new = sm.matmul_nt_gelu(a, b, bias)
+        assert _rel_err(new, old.astype(np.float64)) <= tol
