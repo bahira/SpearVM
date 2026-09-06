@@ -135,6 +135,7 @@ class AttentionLabSim(Simulation):
         self.vmat = np.ascontiguousarray(v, dtype=np.float32)
         if self.k.native:
             import spur_math as sm  # noqa: PLC0415
+            self._sm = sm
             self.cache = sm.KVCache(self.kmat, self.vmat)
         else:
             self.cache = _NumpyKVCache(self.kmat, self.vmat)
