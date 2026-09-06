@@ -127,23 +127,123 @@ vecteur de longueurs (rien à écrire, rien à lire).
 cette machine est ~125 GF/cœur, ~250 GF sur 2 threads), erreur relative
 maximale 6.6e-07 — conforme au float32.
 
-## 4. API et couverture
+
+## 4. Attention multi-têtes : supprimer le coût par appel
+
+La tuile du §3 atteint 123 GFLOPS sur les grandes formes mais **5 GFLOPS à
+tq = 4** — la taille de micro-bloc de QSA. Ce n'est pas le calcul qui limite,
+c'est ce qui l'entoure : un appel ctypes par tête, une allocation de scratch par
+appel, et un packing de K/V refait à chaque fois.
+
+Quatre corrections, chacune mesurée séparément :
+
+**(a) Tout faire en C.** `spur_attention_mha_f32` boucle sur les têtes à
+l'intérieur du noyau, avec parallélisme OpenMP sur les groupes GQA et des
+tampons par thread. Plus rien ne repasse par Python entre les têtes.
+
+**(b) Empiler les têtes d'un groupe GQA.** Les `rep = H_q/H_kv` têtes de
+requêtes d'un groupe partagent la même tête de clés : au lieu de `rep` GEMM de
+`tq` lignes, on en fait **un seul de `rep·tq` lignes**. À tq = 4 et rep = 4, m
+passe de 4 à 16 — d'un régime dominé par les coûts fixes à un régime de calcul.
+
+**(c) Choisir le noyau localement.** Le dispatcher global ignore qu'il s'agit
+d'une tuile d'attention ; ici la forme est connue, et les deux GEMM ont des
+régimes **opposés** :
+
+| GEMM | k | n | noyau gagnant |
+| --- | --- | --- | --- |
+| scores = Q·Kᵀ | d (court) | tk (long) | `dot` si m < 16, sinon `legacy` |
+| PV = W·Vᵀ | tk (long) | d (court) | `dot` presque toujours (jusqu'à ×4.2) |
+
+Le noyau `dot` accumule le long de k avec une seule réduction horizontale par
+case : il gagne quand k est profond. Le `legacy` bloque 8 lignes : m multiple
+de 8 est sa zone de force — la règle l'y laisse. Recherche sur 62 formes de
+tuiles : **moyenne ×1.28, pire cas ×1.00** (aucune régression). La règle
+d'aiguillage *globale* n'est pas touchée : elle est déjà Pareto-optimale sous
+la même contrainte, aucune variante testée ne la bat sans régresser quelque
+part (279 formes f32).
+
+**(d) Amortir le packing : le cache KV.** Le packing est en `O(tk·d·H_kv)`
+alors que le calcul n'est qu'en `O(tq·tk·d·H_q)` : à tq petit, il domine. Or
+les mêmes clés servent à des dizaines de tuiles successives.
+
+```python
+cache = sm.KVCache(k, v)            # packé une fois
+out = cache.attend(q, lengths=L)    # réutilisé à chaque pas
+```
+
+Résultat cumulé (2 threads, f32) :
+
+| | GFLOPS à tq=4 | |
+| --- | --- | --- |
+| boucle par tête (état précédent) | 5.0 | |
+| + une descente C multi-têtes | 23.8 | ×4.8 |
+| + cache KV amorti | **68.8** | **×13.8** |
+
+| | médiane | min | max |
+| --- | --- | --- | --- |
+| multi-têtes vs boucle par tête | ×2.66 | ×1.36 | ×5.17 |
+| multi-têtes vs numpy | ×15.63 | ×5.44 | ×21.84 |
+| cache KV amorti vs appel complet | ×4.40 | ×2.35 | ×4.71 |
+
+Le décodage token par token (tq = 1, tk = 4096) tourne à 34.5 GFLOPS, contre
+2.0 pour numpy. Le chemin packé est **bit-à-bit identique** au chemin complet
+(vérifié par test).
+
+## 5. Cache KV en bf16 : la mémoire toujours, la vitesse parfois
+
+Le bf16 (8 bits de mantisse) est la troncature naturelle du float32 : conversion
+et reconversion sont des décalages de 16 bits. Le GEMM associé garde A en
+float32 (requêtes et poids, peu volumineux) et lit B en bf16 — c'est là que
+passe la bande passante.
+
+| cache f32 | cache bf16 | ms f32 | ms bf16 | gain | erreur rel. |
+| --- | --- | --- | --- | --- | --- |
+| 1.05 Mo | 0.52 | 0.124 | 0.169 | **×0.73** | 1.3e-03 |
+| 4.19 Mo | 2.10 | 0.482 | 0.589 | ×0.82 | 1.6e-03 |
+| 8.39 Mo | 4.19 | 1.032 | 1.174 | ×0.88 | 1.6e-03 |
+| 16.78 Mo | 8.39 | 2.683 | 2.494 | ×1.08 | 1.3e-03 |
+| 16.78 Mo (d=128) | 8.39 | 1.948 | 1.382 | **×1.41** | 1.4e-03 |
+| 67.11 Mo | 33.55 | 8.020 | 7.443 | ×1.08 | 2.0e-03 |
+
+**L'empreinte est divisée par deux dans tous les cas ; la vitesse ne gagne
+qu'au-delà de ~17 Mo de cache** — en dessous, la conversion coûte plus que la
+bande passante économisée. C'est exactement le seuil où le cache KV cesse de
+tenir dans les caches de la machine.
+
+Le choix reste **explicite** (`dtype="bf16"`) et non automatique : basculer
+silencieusement d'une erreur de 1e-7 à 2e-3 selon la taille du contexte serait
+un piège pour l'appelant.
+
+### Une attribution qu'il a fallu corriger
+
+La première mesure donnait bf16 ×1.95 à d = 128. En isolant les GEMM, il est
+apparu que le chemin bf16 utilisait le noyau `dot` alors que le chemin f32
+partait sur `legacy` : **la moitié du « gain bf16 » était un effet de choix de
+noyau**. C'est cette mesure qui a produit la règle (c) ci-dessus ; une fois les
+deux chemins à armes égales, le gain bf16 réel tombe à ×1.08–1.41.
+
+## 6. API et couverture
 
 ```python
 import spur_math as sm
 sm.exp(x, out=None)                         # 1.69 ulp (f32), 2.12 ulp (f64)
 sm.softmax(x, lengths=None, out=None)       # par ligne, longueurs causales
-sm.attention_tile(q, k, v, scale=None, lengths=None)
+sm.attention_tile(q, k, v, scale=None, lengths=None)      # une tete
+sm.attention_mha(q, k, v, scale=None, lengths=None)       # multi-tetes, GQA
+cache = sm.KVCache(k, v, dtype="f32")       # ou "bf16" : empreinte / 2
+cache.attend(q, lengths=None)
 ```
 
-`tests/test_softmax.py` (14 tests) couvre : contrat en ulp sur `exp`, cas
+`tests/test_softmax.py` (24 tests) couvre : contrat en ulp sur `exp`, cas
 limites (`-1e4`, `-800`, saturations `±1e30`), lignes de longueur nulle,
 invariance par translation, sommes à 1, tuile d'attention contre référence
 float64, masque causal (la première requête ne voit qu'une clé : sa sortie doit
-être exactement `v[0]`), et validation des arguments. Suite complète du dépôt :
-**67 tests**.
+être exactement `v[0]`), équivalence multi-têtes/tête-par-tête, égalité
+**bit-à-bit** du cache packé, et bornes du bf16. Suite complète du dépôt :
+**77 tests**.
 
-## 5. Ce qui n'a pas marché
+## 7. Ce qui n'a pas marché
 
 * **Le softmax « online »** : −20 % à −75 % contre les trois passes (§2).
   L'argument flash-attention est un argument de hiérarchie mémoire GPU.
@@ -152,6 +252,12 @@ float64, masque causal (la première requête ne voit qu'une clé : sa sortie do
 * **Mesurer la précision contre une référence float64 sur des entrées float64**
   quand le noyau, lui, reçoit du float32 : produit un faux plancher de 4e-06
   qui masque complètement le comportement du polynôme (§1).
+* **Attribuer un gain à bf16 sans vérifier que les deux chemins utilisent le
+  même noyau** : la moitié du ×1.95 initial venait du choix de kernel (§7).
+* **Toucher à la règle d'aiguillage globale** pour capter les gains du régime
+  m < 64 : aucune variante ne le fait sans régresser ailleurs, sur les 279
+  formes f32 mesurées. La connaissance de forme est donc restée locale à
+  l'attention.
 
 ---
 

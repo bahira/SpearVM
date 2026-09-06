@@ -1,6 +1,21 @@
 # Changelog
 
 ## non publie
+- **attention multi-tetes en une seule descente C + cache KV** — a tq=4 (taille
+  de micro-bloc QSA) la tuile plafonnait a 5 GFLOPS a cause du cout par appel :
+  un appel ctypes par tete, une allocation par appel, un packing K/V refait a
+  chaque fois. Quatre corrections mesurees : tout en C, empilement des tetes
+  d'un groupe GQA (m passe de tq a rep*tq), choix de noyau local a l'attention
+  (moyenne x1.28 sur 62 formes, **pire cas x1.00**), et `KVCache` qui amortit le
+  packing. Resultat : **5.0 -> 68.8 GFLOPS a tq=4 (x13.8)**, x15.6 median vs
+  numpy, decodage tq=1 a 34.5 GFLOPS. Le chemin packe est bit-a-bit identique.
+- **cache KV en bf16** (`KVCache(k, v, dtype="bf16")`) : empreinte divisee par
+  deux dans tous les cas, vitesse gagnante seulement au-dela de ~17 Mo de cache
+  (x1.08 a x1.41 ; x0.73 a x0.88 en dessous), erreur relative 1.3e-3 a 2.0e-3.
+  Le choix reste explicite : basculer silencieusement de 1e-7 a 2e-3 selon la
+  taille du contexte serait un piege.
+- **QSA bout-en-bout** : 2 108 -> **42 968 tokens/s (x20.4)** sur le listing du
+  memoire audite, a masse d'attention identique (`experiments/attention/bench_qsa_e2e.py`).
 - **audit d'architecture bout-en-bout** (`docs/ATTENTION_AUDIT.md`) : index
   hierarchique manquant implemente (routage **N^1.30 contre N^2.00**, 11.7x
   moins d'operations a N=32768) puis QSA complet reecrit avec les correctifs et

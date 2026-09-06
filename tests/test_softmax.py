@@ -231,3 +231,40 @@ def test_mha_validation():
         sm.attention_mha(np.zeros((4, 8), dtype=np.float32), k, v)   # 2D refuse
     with pytest.raises(ValueError):
         sm.KVCache(k, np.zeros((15, 4, 8), dtype=np.float32))
+
+
+# --- cache KV en bf16 --------------------------------------------------------
+def test_kv_cache_bf16_empreinte_et_precision():
+    rng = np.random.default_rng(9)
+    tk, d, h_q, h_kv = 512, 32, 8, 2
+    k = (rng.standard_normal((tk, h_kv, d)) / np.sqrt(d)).astype(np.float32)
+    v = rng.standard_normal((tk, h_kv, d)).astype(np.float32)
+    c32 = sm.KVCache(k, v)
+    cbf = sm.KVCache(k, v, dtype="bf16")
+    assert cbf.nbytes * 2 == c32.nbytes, "bf16 doit diviser l'empreinte par deux"
+
+    q = (rng.standard_normal((4, h_q, d)) / np.sqrt(d)).astype(np.float32)
+    a, b = c32.attend(q), cbf.attend(q)
+    rel = np.abs(a - b).max() / np.abs(a).max()
+    # 8 bits de mantisse : ~4e-3 par element, moyenne sur tk termes -> ~1e-3
+    assert rel <= 6e-3, f"ecart bf16 {rel:.2e} trop grand"
+    assert rel > 1e-5, "un ecart nul signifierait que bf16 n'est pas applique"
+
+
+def test_kv_cache_bf16_causal_et_reference():
+    rng = np.random.default_rng(10)
+    tk, d, h_q, h_kv = 128, 32, 4, 2
+    k = (rng.standard_normal((tk, h_kv, d)) / np.sqrt(d)).astype(np.float32)
+    v = rng.standard_normal((tk, h_kv, d)).astype(np.float32)
+    q = (rng.standard_normal((8, h_q, d)) / np.sqrt(d)).astype(np.float32)
+    lengths = np.arange(tk - 7, tk + 1, dtype=np.int32)
+    got = sm.KVCache(k, v, dtype="bf16").attend(q, lengths=lengths)
+    ref = _ref_mha(q, k, v, lengths)
+    assert np.isfinite(got).all()
+    assert np.abs(got - ref).max() / np.abs(ref).max() <= 6e-3
+
+
+def test_kv_cache_dtype_invalide():
+    k = np.zeros((8, 2, 4), dtype=np.float32)
+    with pytest.raises(ValueError):
+        sm.KVCache(k, k, dtype="int8")

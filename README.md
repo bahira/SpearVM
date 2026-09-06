@@ -111,7 +111,10 @@ l'attention. Elles ont été construites et mesurées ([`docs/TRANSCEND.md`](doc
 ```python
 sm.exp(x)                                   # 1.69 ulp (f32), 2.12 ulp (f64)
 sm.softmax(x, lengths=None)                 # par ligne ; lengths = masque causal
-sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V
+sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V, une tête
+sm.attention_mha(q, k, v, lengths=None)     # multi-têtes / GQA, une descente C
+cache = sm.KVCache(k, v, dtype="bf16")      # packé une fois, réutilisé
+cache.attend(q, lengths=None)
 ```
 
 | Noyau | Précision | Gain vs numpy |
@@ -120,6 +123,9 @@ sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V
 | `softmax` | ≈ numpy f32 | ×1.9 – ×6.2 |
 | `softmax` causal (longueurs) | idem | **×11.8** |
 | `attention_tile` | 6.6e-07 relatif | **×2.77 médian**, jusqu'à 123 GFLOPS |
+| `attention_mha` (multi-têtes, GQA) | idem | **×15.6 médian**, ×2.7 vs boucle par tête |
+| `KVCache` (packé, réutilisé) | idem | ×4.4 de plus — 68.8 GFLOPS à tq=4 |
+| `KVCache(dtype="bf16")` | 2e-03 relatif | empreinte ÷2 ; plus rapide au-delà de 17 Mo |
 
 Le masque causal est porté par un vecteur de **longueurs** : rien à
 matérialiser, et le noyau ne parcourt que les entrées valides. Le schéma

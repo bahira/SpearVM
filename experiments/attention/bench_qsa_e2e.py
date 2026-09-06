@@ -104,12 +104,17 @@ def run_variant(Q, K, V, budget_tokens, variant, group=1):
             e = np.exp(s)
             w = e / (e.sum(axis=2, keepdims=True) + 1e-30)
             out[rows] = np.einsum("htk,khd->thd", w, Vs).astype(np.float32)
-        else:  # noyaux SpearVM, une tuile par tete
+        elif variant == "spur":   # une tuile C par tete
             for h in range(H_q):
                 kk = np.ascontiguousarray(K[idx, h // rep])
                 vv = np.ascontiguousarray(V[idx, h // rep])
                 out[rows, h] = sm.attention_tile(
                     np.ascontiguousarray(q_sub[:, h]), kk, vv, lengths=lens)
+        else:                      # "mha" : une seule descente C, toutes tetes
+            out[rows] = sm.attention_mha(np.ascontiguousarray(q_sub),
+                                         np.ascontiguousarray(K[idx]),
+                                         np.ascontiguousarray(V[idx]),
+                                         lengths=lens)
     return out, sel_all, time.perf_counter() - t0
 
 
@@ -127,7 +132,9 @@ def main():
                                       ("corrige (numpy)", "corrige", 1),
                                       ("spur", "spur", 1),
                                       ("spur groupe 4", "spur", 4),
-                                      ("spur groupe 16", "spur", 16)]:
+                                      ("spur groupe 16", "spur", 16),
+                                      ("mha groupe 16", "mha", 16),
+                                      ("mha groupe 64", "mha", 64)]:
             out, sel, dt = run_variant(Q, K, V, budget, variant, group)
             if base is None:
                 base = dt
@@ -147,7 +154,8 @@ def main():
 
     print("\n### Debit mesure (et pourquoi on n'extrapole pas ici)")
     big = max(r["N"] for r in rows)
-    for label in ("memoire", "spur", "spur groupe 16"):
+    for label in ("memoire", "spur", "spur groupe 16", "mha groupe 16",
+                  "mha groupe 64"):
         sub = [r for r in rows if r["variante"] == label]
         tail = [r for r in sub if r["N"] == big][0]
         serie = " -> ".join(f"{r['tokens_par_s']:.0f}" for r in sub)

@@ -9,6 +9,7 @@
 #include <omp.h>
 #endif
 #include <stdlib.h>
+#include <stdint.h>
 
 /* ================= AVX-512 runtime dispatch ================================
    Compile avec -mavx2 (binaire portable), active AVX-512 a l'execution
@@ -1596,19 +1597,34 @@ void spur_softmax_rows(const double* X, double* Y, long long rows,
      Q : (tq, H_q,  d)   K, V : (tk, H_kv, d)   O : (tq, H_q, d)
    `lens[i]` = nombre de cles visibles par la requete i (NULL = toutes).
    ========================================================================== */
-/* Choix de noyau interne a l'attention. Le dispatcher global ne peut pas
-   savoir qu'il s'agit d'une tuile d'attention ; ici on connait la forme exacte
-   et la mesure (results/tile_gemm_shapes.json) dit que pour m < 64 avec k
-   profond, le noyau dot bat le legacy de 1.4x a 2.0x — sauf a m multiple de 8,
-   ou le blocage 8 lignes du legacy tombe juste. Cette connaissance reste
-   locale : la regle d'aiguillage globale, elle, est deja Pareto-optimale sous
-   contrainte de non-regression et n'est pas touchee.                        */
+/* Choix de noyau interne a l'attention.
+   Le dispatcher global ne peut pas savoir qu'il s'agit d'une tuile
+   d'attention ; ici la forme est connue et les deux GEMM ont des regimes
+   OPPOSES (mesure : results/att_m_grid.json, results/tile_gemm_shapes.json) :
+
+     scores = Q.K^T  -> k = d (court), n = tk (long)
+     PV     = W.V^T  -> k = tk (long), n = d (court)
+
+   Le noyau dot accumule le long de k avec une seule reduction horizontale par
+   case : il gagne quand k est profond (PV, jusqu'a x4.2) et perd quand k est
+   court et n large, sauf a tres peu de lignes. Le noyau legacy, lui, bloque 8
+   lignes : m multiple de 8 est sa zone de force.
+
+   Regle retenue par recherche sur 62 formes de tuiles : moyenne x1.28,
+   **pire cas x1.00** (aucune regression). La regle d'aiguillage GLOBALE n'est
+   pas touchee : elle est deja Pareto-optimale sous la meme contrainte.       */
 static inline void spur_att_gemm_f32(const float* A, const float* B, float* C,
                                      long long m, long long k, long long n){
-    if (m < 64 && n >= 48 && k >= 128 && (m <= 4 || (m >= 16 && (m & 7))))
-        spur_gemm_dot_f32(A, B, C, m, k, n);
-    else
-        spur_matmul_nt_f32(A, B, C, m, k, n);
+    if (m < 64 && k >= 128){
+        const int off8 = (m & 7) != 0;                  /* hors zone du legacy */
+        const int pv_like = (k >= n) && (k >= 1024) && (off8 || k >= 4096);
+        const int scores_like = off8 && (m < 16) && (n >= 256);
+        if (pv_like || scores_like){
+            spur_gemm_dot_f32(A, B, C, m, k, n);
+            return;
+        }
+    }
+    spur_matmul_nt_f32(A, B, C, m, k, n);
 }
 
 /* ---- cache KV packe, reutilisable ----------------------------------------
@@ -1747,5 +1763,139 @@ void spur_attention_mha_packed_f32(const float* Q, const float* packed, float* O
         }
     }
     SPUR_AFREE(lbuf);
+    SPUR_AFREE(work);
+}
+
+/* ============================================================================
+   CACHE KV EN BF16 — moitie moins de trafic memoire
+   ----------------------------------------------------------------------------
+   A grand tk l'attention n'est plus limitee par le calcul mais par la lecture
+   de K et V (8.4 Mo a tk=8192, d=64, 2 tetes : au-dela de tout cache). Le bf16
+   (1 signe, 8 exposant, 7 mantisse) est la troncature naturelle du float32 :
+   la conversion est un decalage de 16 bits, et la reconversion aussi.
+
+   Le GEMM ci-dessous garde A en float32 (les requetes et les poids d'attention,
+   peu volumineux) et lit B en bf16 : c'est la ou passe la bande passante.
+   ========================================================================== */
+
+static inline uint16_t spur_f32_to_bf16(float f){
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+    if (((x >> 23) & 0xFF) == 0xFF) return (uint16_t)(x >> 16);   /* NaN / inf */
+    const uint32_t r = ((x >> 16) & 1u) + 0x7FFFu;                /* arrondi au plus proche pair */
+    return (uint16_t)((x + r) >> 16);
+}
+
+static inline __m256 spur_load8_bf16(const uint16_t* p){
+    __m128i h = _mm_loadu_si128((const __m128i*)p);
+    return _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(h), 16));
+}
+
+/* C = A . B^T avec A float32 (m,k) et B bf16 (n,k). Bloc 3x4, une reduction
+   horizontale par case, comme le noyau dot f32.                              */
+static void spur_gemm_nt_bf16b_f32(const float* restrict A, const uint16_t* restrict B,
+                                   float* restrict C, long long m, long long k,
+                                   long long n){
+    const long long MR = 3, NR = 4;
+    #pragma omp parallel for schedule(static) if(m >= 3 * omp_get_max_threads())
+    for (long long i0 = 0; i0 < m; i0 += MR){
+        const long long rows = (m - i0 < MR) ? (m - i0) : MR;
+        for (long long j0 = 0; j0 < n; j0 += NR){
+            const long long cols = (n - j0 < NR) ? (n - j0) : NR;
+            __m256 acc[3][4];
+            for (int a = 0; a < 3; a++)
+                for (int b = 0; b < 4; b++) acc[a][b] = _mm256_setzero_ps();
+            long long q = 0;
+            for (; q + 7 < k; q += 8){
+                __m256 av[3];
+                for (long long r = 0; r < rows; r++) av[r] = _mm256_loadu_ps(A + (i0 + r) * k + q);
+                for (long long c = 0; c < cols; c++){
+                    const __m256 bv = spur_load8_bf16(B + (j0 + c) * k + q);
+                    for (long long r = 0; r < rows; r++)
+                        acc[r][c] = _mm256_fmadd_ps(av[r], bv, acc[r][c]);
+                }
+            }
+            for (long long r = 0; r < rows; r++)
+                for (long long c = 0; c < cols; c++){
+                    float s = hsum8(acc[r][c]);
+                    for (long long t = q; t < k; t++){
+                        uint32_t w = (uint32_t)B[(j0 + c) * k + t] << 16;
+                        float bf;
+                        memcpy(&bf, &w, sizeof(bf));
+                        s += A[(i0 + r) * k + t] * bf;
+                    }
+                    C[(i0 + r) * n + j0 + c] = s;
+                }
+        }
+    }
+}
+
+long long spur_kv_pack_size_bf16(long long tk, long long d, int h_kv){
+    return (long long)2 * tk * d * h_kv;          /* en nombre de uint16 */
+}
+
+void spur_kv_pack_bf16(const float* K, const float* V, long long tk, long long d,
+                       int h_kv, uint16_t* packed){
+    const size_t kv_sz = (size_t)tk * d;
+    uint16_t* Kp = packed;
+    uint16_t* Vp = packed + kv_sz * (size_t)h_kv;
+    #pragma omp parallel for schedule(static)
+    for (int g = 0; g < h_kv; g++){
+        uint16_t* kd = Kp + kv_sz * (size_t)g;
+        uint16_t* vd = Vp + kv_sz * (size_t)g;
+        for (long long t = 0; t < tk; t++){
+            const float* ks = K + (t * h_kv + g) * d;
+            const float* vs = V + (t * h_kv + g) * d;
+            for (long long c = 0; c < d; c++){
+                kd[t * d + c] = spur_f32_to_bf16(ks[c]);
+                vd[c * tk + t] = spur_f32_to_bf16(vs[c]);
+            }
+        }
+    }
+}
+
+void spur_attention_mha_packed_bf16(const float* Q, const uint16_t* packed, float* O,
+                                    long long tq, long long tk, long long d,
+                                    int h_q, int h_kv, float scale, const int* lens){
+    if (tq <= 0 || tk <= 0 || d <= 0 || h_q <= 0 || h_kv <= 0) return;
+    if (h_q % h_kv) return;
+    const int rep = h_q / h_kv;
+    const size_t kv_sz = (size_t)tk * d;
+    const uint16_t* Kp = packed;
+    const uint16_t* Vp = packed + kv_sz * (size_t)h_kv;
+
+    const long long mb = (long long)rep * tq;
+    const size_t per = (size_t)mb * d + (size_t)mb * tk + (size_t)mb * d;
+    float* work = (float*)SPUR_AALLOC(sizeof(float) * per);
+    int* lb = (int*)SPUR_AALLOC(sizeof(int) * (size_t)mb);
+    if (!work || !lb){
+        if (work) SPUR_AFREE(work);
+        if (lb) SPUR_AFREE(lb);
+        return;
+    }
+    float* Qb = work;
+    float* S  = Qb + (size_t)mb * d;
+    float* Ob = S + (size_t)mb * tk;
+
+    for (int g = 0; g < h_kv; g++){
+        for (int r = 0; r < rep; r++){
+            const int h = g * rep + r;
+            for (long long t = 0; t < tq; t++){
+                memcpy(Qb + ((long long)r * tq + t) * d, Q + (t * h_q + h) * d,
+                       (size_t)d * sizeof(float));
+                if (lens) lb[(long long)r * tq + t] = lens[t];
+            }
+        }
+        spur_gemm_nt_bf16b_f32(Qb, Kp + kv_sz * (size_t)g, S, mb, d, tk);
+        spur_softmax_core_f32(S, S, mb, tk, lens ? lb : NULL, scale);
+        spur_gemm_nt_bf16b_f32(S, Vp + kv_sz * (size_t)g, Ob, mb, tk, d);
+        for (int r = 0; r < rep; r++){
+            const int h = g * rep + r;
+            for (long long t = 0; t < tq; t++)
+                memcpy(O + (t * h_q + h) * d, Ob + ((long long)r * tq + t) * d,
+                       (size_t)d * sizeof(float));
+        }
+    }
+    SPUR_AFREE(lb);
     SPUR_AFREE(work);
 }

@@ -3,30 +3,38 @@ QSA bout-en-bout : listing du memoire contre version corrigee + noyaux
 ==============================================================================
 
 --- N = 2048, budget 512 tokens
-  memoire             825.2 ms       2482 tok/s  x 1.00  masse  26.2 %
-  corrige (numpy)     934.9 ms       2191 tok/s  x 0.88  masse  26.0 %
-  spur                664.0 ms       3084 tok/s  x 1.24  masse  26.0 %
-  spur groupe 4       284.2 ms       7207 tok/s  x 2.90  masse  26.0 %
-  spur groupe 16      160.9 ms      12728 tok/s  x 5.13  masse  26.1 %
+  memoire             851.0 ms       2406 tok/s  x 1.00  masse  26.2 %
+  corrige (numpy)     978.7 ms       2093 tok/s  x 0.87  masse  26.0 %
+  spur                697.4 ms       2936 tok/s  x 1.22  masse  26.0 %
+  spur groupe 4       285.1 ms       7182 tok/s  x 2.98  masse  26.0 %
+  spur groupe 16      169.5 ms      12084 tok/s  x 5.02  masse  26.1 %
+  mha groupe 16       129.4 ms      15827 tok/s  x 6.58  masse  26.1 %
+  mha groupe 64       118.9 ms      17230 tok/s  x 7.16  masse  23.5 %
 
 --- N = 4096, budget 512 tokens
-  memoire            1795.3 ms       2282 tok/s  x 1.00  masse  12.8 %
-  corrige (numpy)    1990.1 ms       2058 tok/s  x 0.90  masse  12.7 %
-  spur               1467.1 ms       2792 tok/s  x 1.22  masse  12.7 %
-  spur groupe 4       461.8 ms       8870 tok/s  x 3.89  masse  12.7 %
-  spur groupe 16      216.7 ms      18901 tok/s  x 8.28  masse  12.8 %
+  memoire            1834.4 ms       2233 tok/s  x 1.00  masse  12.8 %
+  corrige (numpy)    2030.1 ms       2018 tok/s  x 0.90  masse  12.7 %
+  spur               1348.7 ms       3037 tok/s  x 1.36  masse  12.7 %
+  spur groupe 4       475.6 ms       8613 tok/s  x 3.86  masse  12.7 %
+  spur groupe 16      238.5 ms      17171 tok/s  x 7.69  masse  12.8 %
+  mha groupe 16       163.7 ms      25017 tok/s  x11.20  masse  12.8 %
+  mha groupe 64       143.4 ms      28569 tok/s  x12.79  masse  12.1 %
 
 --- N = 8192, budget 512 tokens
-  memoire            3874.9 ms       2114 tok/s  x 1.00  masse   6.3 %
-  corrige (numpy)    4199.1 ms       1951 tok/s  x 0.92  masse   6.3 %
-  spur               2749.1 ms       2980 tok/s  x 1.41  masse   6.3 %
-  spur groupe 4       923.4 ms       8872 tok/s  x 4.20  masse   6.3 %
-  spur groupe 16      394.4 ms      20772 tok/s  x 9.82  masse   6.3 %
+  memoire            3885.3 ms       2108 tok/s  x 1.00  masse   6.3 %
+  corrige (numpy)    4365.7 ms       1876 tok/s  x 0.89  masse   6.3 %
+  spur               2819.1 ms       2906 tok/s  x 1.38  masse   6.3 %
+  spur groupe 4       854.7 ms       9584 tok/s  x 4.55  masse   6.3 %
+  spur groupe 16      360.6 ms      22715 tok/s  x10.77  masse   6.3 %
+  mha groupe 16       243.2 ms      33678 tok/s  x15.97  masse   6.3 %
+  mha groupe 64       190.7 ms      42968 tok/s  x20.38  masse   5.9 %
 
 ### Debit mesure (et pourquoi on n'extrapole pas ici)
-  memoire          : 2482 -> 2282 -> 2114 tok/s (N croissant), soit 2114 tok/s a N=8192
-  spur             : 3084 -> 2792 -> 2980 tok/s (N croissant), soit 2980 tok/s a N=8192
-  spur groupe 16   : 12728 -> 18901 -> 20772 tok/s (N croissant), soit 20772 tok/s a N=8192
+  memoire          : 2406 -> 2233 -> 2108 tok/s (N croissant), soit 2108 tok/s a N=8192
+  spur             : 2936 -> 3037 -> 2906 tok/s (N croissant), soit 2906 tok/s a N=8192
+  spur groupe 16   : 12084 -> 17171 -> 22715 tok/s (N croissant), soit 22715 tok/s a N=8192
+  mha groupe 16    : 15827 -> 25017 -> 33678 tok/s (N croissant), soit 33678 tok/s a N=8192
+  mha groupe 64    : 17230 -> 28569 -> 42968 tok/s (N croissant), soit 42968 tok/s a N=8192
   Le debit MONTE avec N pour les variantes groupees : le surcout
   Python par tuile s'amortit. Un ajustement en loi de puissance
   donnerait un exposant < 1, ce qui n'a aucun sens physique — le

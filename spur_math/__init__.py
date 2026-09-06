@@ -292,6 +292,22 @@ _attention_mha_packed.argtypes = [_PF_, _PF_, _PF_, ctypes.c_longlong,
 _attention_mha_packed.restype = None
 
 
+_U16 = ctypes.POINTER(ctypes.c_uint16)
+_kv_pack_size_bf16 = _dll.spur_kv_pack_size_bf16
+_kv_pack_size_bf16.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int]
+_kv_pack_size_bf16.restype = ctypes.c_longlong
+_kv_pack_bf16 = _dll.spur_kv_pack_bf16
+_kv_pack_bf16.argtypes = [_PF_, _PF_, ctypes.c_longlong, ctypes.c_longlong,
+                          ctypes.c_int, _U16]
+_kv_pack_bf16.restype = None
+_attention_mha_bf16 = _dll.spur_attention_mha_packed_bf16
+_attention_mha_bf16.argtypes = [_PF_, _U16, _PF_, ctypes.c_longlong,
+                                ctypes.c_longlong, ctypes.c_longlong,
+                                ctypes.c_int, ctypes.c_int, ctypes.c_float,
+                                ctypes.POINTER(ctypes.c_int)]
+_attention_mha_bf16.restype = None
+
+
 class KVCache:
     """Cache K/V packe une fois, reutilisable par des dizaines de tuiles.
 
@@ -303,19 +319,29 @@ class KVCache:
         out = cache.attend(q, lengths=L)  # q : (tq, H_q, d)
     """
 
-    __slots__ = ("tk", "d", "h_kv", "_buf")
+    __slots__ = ("tk", "d", "h_kv", "dtype", "_buf")
 
-    def __init__(self, k, v):
+    def __init__(self, k, v, dtype="f32"):
+        """`dtype` : "f32" ou "bf16" (empreinte divisee par deux)."""
         k = np.ascontiguousarray(k, dtype=np.float32)
         v = np.ascontiguousarray(v, dtype=np.float32)
         if k.ndim != 3 or v.shape != k.shape:
             raise ValueError(f"k et v doivent etre (tk, H_kv, d) identiques : "
                              f"{k.shape} vs {v.shape}")
+        if dtype not in ("f32", "bf16"):
+            raise ValueError(f"dtype attendu 'f32' ou 'bf16', recu {dtype!r}")
         self.tk, self.h_kv, self.d = k.shape
-        n = int(_kv_pack_size(self.tk, self.d, self.h_kv))
-        self._buf = np.empty(n, dtype=np.float32)
-        _kv_pack(k.ctypes.data_as(_PF_), v.ctypes.data_as(_PF_),
-                 self.tk, self.d, self.h_kv, self._buf.ctypes.data_as(_PF_))
+        self.dtype = dtype
+        if dtype == "bf16":
+            n = int(_kv_pack_size_bf16(self.tk, self.d, self.h_kv))
+            self._buf = np.empty(n, dtype=np.uint16)
+            _kv_pack_bf16(k.ctypes.data_as(_PF_), v.ctypes.data_as(_PF_),
+                          self.tk, self.d, self.h_kv, self._buf.ctypes.data_as(_U16))
+        else:
+            n = int(_kv_pack_size(self.tk, self.d, self.h_kv))
+            self._buf = np.empty(n, dtype=np.float32)
+            _kv_pack(k.ctypes.data_as(_PF_), v.ctypes.data_as(_PF_),
+                     self.tk, self.d, self.h_kv, self._buf.ctypes.data_as(_PF_))
 
     @property
     def nbytes(self):
@@ -337,10 +363,15 @@ class KVCache:
             if lengths.shape != (tq,):
                 raise ValueError(f"lengths attendu ({tq},), recu {lengths.shape}")
             lp = lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-        _attention_mha_packed(q.ctypes.data_as(_PF_), self._buf.ctypes.data_as(_PF_),
-                              o.ctypes.data_as(_PF_), tq, self.tk, d, h_q, self.h_kv,
-                              float(1.0 / np.sqrt(d)) if scale is None else float(scale),
-                              lp)
+        sc = float(1.0 / np.sqrt(d)) if scale is None else float(scale)
+        if self.dtype == "bf16":
+            _attention_mha_bf16(q.ctypes.data_as(_PF_), self._buf.ctypes.data_as(_U16),
+                                o.ctypes.data_as(_PF_), tq, self.tk, d, h_q,
+                                self.h_kv, sc, lp)
+        else:
+            _attention_mha_packed(q.ctypes.data_as(_PF_), self._buf.ctypes.data_as(_PF_),
+                                  o.ctypes.data_as(_PF_), tq, self.tk, d, h_q,
+                                  self.h_kv, sc, lp)
         return o
 
 
