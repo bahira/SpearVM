@@ -83,18 +83,13 @@ jobs:
           python -m pip install build wheel numpy
           gcc -O3 -mavx2 -mfma -fopenmp -shared -o spur_math/spur_kernels.dll src/spur_kernels.c
           python -m build --wheel --no-isolation
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
-          wheel = next(Path('dist').glob('spur_math-*py3-none-any.whl'))
-          subprocess.check_call(['python', '-m', 'wheel', 'tags', '--platform-tag', 'win_amd64', str(wheel)])
-          PY
-          python -m pip install --force-reinstall --no-deps numpy dist/*win_amd64.whl
+          # The wheel contains a Windows DLL; install the artifact directly for a smoke test.
+          python -m pip install --force-reinstall --no-deps numpy dist/spur_math-*.whl
           python -c "import spur_math, numpy as np; print('windows gelu ok:', spur_math.gelu(np.array([1.0])))"
       - uses: actions/upload-artifact@v6
         with:
           name: windows-wheel
-          path: dist/*win_amd64.whl
+          path: dist/*.whl
 
   linux-wheel:
     # Build and inspect the Linux wheel on the supported CI runner.
