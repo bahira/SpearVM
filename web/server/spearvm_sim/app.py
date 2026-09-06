@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import bench as bench_mod
-from .auth import Authenticator, Principal
+from .auth import AuthService, MemoryRateLimiter, Principal, RedisRateLimiter, build_auth_service
 from .config import settings
 from .kernels import get_kernels
 from .sims import REGISTRY, create, describe_all
@@ -33,7 +33,13 @@ _clients = {"count": 0}
 _tenant_clients: dict[str, int] = {}
 _bench_cache: dict[str, Any] = {"report": None, "at": 0.0}
 BENCH_TTL_S = 30.0
-_auth = Authenticator(settings.auth_required, settings.api_keys)
+_auth: AuthService = build_auth_service(
+    settings.auth_required, settings.api_keys, settings.database_url
+)
+try:
+    _rate_limiter = RedisRateLimiter(settings.redis_url) if settings.redis_url else MemoryRateLimiter()
+except Exception:
+    _rate_limiter = MemoryRateLimiter()
 
 
 def _api_key_from_request(request: Request) -> str | None:
@@ -45,9 +51,16 @@ def _api_key_from_request(request: Request) -> str | None:
     return token if scheme.lower() == "bearer" and token else None
 
 
+def _check_rate(principal: Principal) -> None:
+    if not _rate_limiter.allow(principal.tenant_id, settings.rate_limit_per_minute):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+
 def require_http_auth(request: Request) -> Principal:
     try:
-        return _auth.require(_api_key_from_request(request))
+        principal = _auth.require(_api_key_from_request(request))
+        _check_rate(principal)
+        return principal
     except PermissionError as exc:
         raise HTTPException(status_code=401, detail="authentication required") from exc
 
@@ -186,6 +199,9 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
         await websocket.close(code=4401, reason="authentication required")
         return
     tenant_id = principal.tenant_id
+    if not _rate_limiter.allow(tenant_id, settings.rate_limit_per_minute):
+        await websocket.close(code=4429, reason="rate limit exceeded")
+        return
     if _clients["count"] >= settings.max_clients:
         await websocket.close(code=4429, reason="trop de clients simultanes")
         return

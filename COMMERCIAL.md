@@ -63,6 +63,18 @@ Configure it with:
 SPEARVM_AUTH_REQUIRED=1
 SPEARVM_API_KEYS=tenant-a:replace-with-a-long-random-key,tenant-b:another-key
 SPEARVM_MAX_CLIENTS_PER_TENANT=4
+SPEARVM_RATE_LIMIT_PER_MINUTE=120
+```
+
+A reproducible staging stack is provided by `docker-compose.staging.yml`:
+
+```bash
+cp .env.staging.example .env
+# edit .env and set a strong POSTGRES_PASSWORD
+docker compose -f docker-compose.staging.yml up --build -d
+# Provision the first tenant key from an environment with the server dependencies:
+DATABASE_URL='postgresql://spearvm:PASSWORD@localhost:5432/spearvm' \
+  python scripts/provision_key.py create acme
 ```
 
 API keys must be injected through a secret manager in production, never

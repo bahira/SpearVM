@@ -43,6 +43,9 @@ class Settings:
         )
     )
     max_clients_per_tenant: int = _int("SPEARVM_MAX_CLIENTS_PER_TENANT", 4)
+    rate_limit_per_minute: int = _int("SPEARVM_RATE_LIMIT_PER_MINUTE", 120)
+    database_url: str | None = os.environ.get("DATABASE_URL") or None
+    redis_url: str | None = os.environ.get("REDIS_URL") or None
 
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(

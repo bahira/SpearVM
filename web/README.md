@@ -136,6 +136,11 @@ tenant possède sa propre limite de connexions (`SPEARVM_MAX_CLIENTS_PER_TENANT`
 | `SPEARVM_CORS` | `*` | origines autorisees |
 | `SPEARVM_LOG_LEVEL` | `info` | verbosite uvicorn/app |
 | `SPEARVM_FORCE_FALLBACK` | — | force le backend numpy |
+| `SPEARVM_AUTH_REQUIRED` | `0` | active les API keys obligatoires |
+| `SPEARVM_API_KEYS` | — | clés locales `tenant:secret` (dev seulement) |
+| `DATABASE_URL` | — | PostgreSQL pour les clés hashées |
+| `REDIS_URL` | — | Redis pour le rate limiting distribué |
+| `SPEARVM_RATE_LIMIT_PER_MINUTE` | `120` | quota par tenant |
 
 ## Note de mesure (trouvee en instrumentant ce lab)
 

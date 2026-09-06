@@ -22,6 +22,9 @@ web/client/dist/
 spur_math/*.so
 .venv/
 venv/
+.env
+.env.*
+!.env.staging.example
 .pytest_cache/
 
 # --- autotuner (experiments/) : .so generes, on garde les CSV/JSON de mesure ---
@@ -29,3 +32,5 @@ experiments/build/
 
 # modeles entraines (reproductibles par experiments/attention/tiny_lm.py)
 experiments/results/*.pkl
+
+spur_math/_native/
