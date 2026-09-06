@@ -15,7 +15,10 @@ if platform.machine().lower() not in ("x86_64", "amd64"):
     )
 
 _PKG = os.path.dirname(os.path.abspath(__file__))
-_SRC_C = os.path.join(_PKG, "src", "spur_kernels.c")
+# In a source checkout, C sources live next to the package.  Keep this
+# lookup independent from the current working directory so imports from an
+# installed checkout do not silently fail just because the caller changed cwd.
+_SRC_C = os.path.abspath(os.path.join(_PKG, os.pardir, "src", "spur_kernels.c"))
 
 
 def _try_compile():

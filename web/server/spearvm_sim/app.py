@@ -71,9 +71,11 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    """Liveness endpoint: the process is alive even in NumPy fallback mode."""
     k = get_kernels()
     return {
         "status": "ok",
+        "ready": True,
         "uptime_s": round(time.time() - START_TIME, 1),
         "clients": _clients["count"],
         "max_clients": settings.max_clients,
@@ -81,6 +83,17 @@ def health() -> dict[str, Any]:
         "simulations": list(REGISTRY),
         "static": settings.serve_static,
     }
+
+
+@app.get("/api/ready")
+def ready() -> JSONResponse:
+    """Readiness endpoint suitable for load balancers and container probes."""
+    try:
+        backend = get_kernels()
+        return JSONResponse({"status": "ready", "backend": backend.capabilities()})
+    except Exception as exc:  # noqa: BLE001 - probes must return a useful 503
+        log.exception("readiness check failed")
+        return JSONResponse({"status": "not_ready", "error": str(exc)}, status_code=503)
 
 
 @app.get("/api/simulations")

@@ -287,4 +287,9 @@ web/client/           Client Three.js (Vite + TypeScript), 4 cas d'usage
 
 ## Licence
 
-MIT
+Le dépôt communautaire est distribué sous MIT (`LICENSE`). Une voie de
+licence commerciale avec support, redistribution propriétaire et SLA est
+décrite dans [`COMMERCIAL.md`](COMMERCIAL.md) et
+[`LICENSE-COMMERCIAL.md`](LICENSE-COMMERCIAL.md). Le document commercial est
+un modèle de référence et doit être remplacé par un accord signé et relu par
+un conseil juridique avant toute vente.
