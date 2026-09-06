@@ -33,6 +33,7 @@ COPY src/ src/
 COPY include/ include/
 COPY spur_math/ spur_math/
 COPY web/server/ web/server/
+COPY scripts/ scripts/
 COPY --from=client /build/dist web/client/dist
 
 RUN gcc -O3 -mavx2 -mfma -fopenmp -shared -fPIC \

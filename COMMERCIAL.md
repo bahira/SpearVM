@@ -62,8 +62,23 @@ python scripts/load_test.py
 ```
 
 The optional Caddy edge service terminates TLS and proxies to the API. Set
-`DOMAIN` to a real DNS name for automatic certificates. For a commercial
-deployment, place the service behind TLS termination and an identity-aware reverse proxy. The service includes opt-in API-key
+`DOMAIN` to a real DNS name for automatic certificates.
+
+Inject secrets from Vault, AWS Secrets Manager, 1Password, or your CI secret
+store; do not commit `.env`:
+
+```bash
+export POSTGRES_PASSWORD="$(vault kv get -field=password secret/spearvm/staging)"
+export TENANT_ID=acme
+export TENANT_ROLE=admin
+./scripts/deploy_staging.sh
+unset POSTGRES_PASSWORD TENANT_ID TENANT_ROLE
+```
+
+The deploy script builds the stack, waits for `/api/ready`, runs a smoke load
+test, and provisions the requested tenant. Capture the one-time API key in
+the secret manager immediately. For a commercial deployment, place the
+service behind TLS termination and an identity-aware reverse proxy. The service includes opt-in API-key
 authentication and per-tenant connection quotas, but does not implement user
 accounts, billing, license-key enforcement, or external tenant provisioning.
 Configure it with:
