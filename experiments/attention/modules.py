@@ -193,18 +193,23 @@ def dense_causal_attention(Q, K, V):
     return out
 
 
-def attention_mass_recall(Q, K, selected, micro_block_size, causal=True):
+def attention_mass_recall(Q, K, selected, micro_block_size, causal=True, offset=0):
     """Fraction de la masse d'attention exacte capturee par les blocs choisis.
 
     C'est la metrique qui dit si le routage IndexPool est fidele : le memoire
     ne la mesure jamais.
+
+    `offset` : indice du premier bloc de `selected`. Mesurer sur les premiers
+    blocs d'une sequence n'a aucun sens — ils tiennent entierement dans le
+    budget, donc la masse vaut trivialement 100 %.
     """
     N, H_q, d_h = Q.shape
     rep = H_q // K.shape[1]
     Kr = np.repeat(K, rep, axis=1).astype(np.float64)
     Qd = Q.astype(np.float64)
     recalls = []
-    for b, sel in enumerate(selected):
+    for b0, sel in enumerate(selected):
+        b = b0 + offset          # indice reel du bloc de requetes
         keep = np.zeros(N, dtype=bool)
         idx = (np.asarray(sel)[:, None] * micro_block_size
                + np.arange(micro_block_size)).ravel()

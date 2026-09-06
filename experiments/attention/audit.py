@@ -396,18 +396,28 @@ def audit_amdahl():
 # ---------------------------------------------------------------------------
 def audit_runtime_extrapolation():
     """Le memoire presente son listing NumPy comme la preuve de ses chiffres a
-    1M tokens. On mesure ce que ce listing coute reellement, et on extrapole."""
-    rng = np.random.default_rng(0)
+    1M tokens. On mesure ce que ce listing coute reellement, et on extrapole.
 
-    xs, ys = [], []
-    for N in (256, 512, 1024, 2048):
+    Piege evite (apres l'avoir commis) : si N/4 <= budget/4, le budget ne mord
+    pas et l'attention est en realite DENSE. Mesurer l'exposant dans ce regime
+    donne N^1.9 et fait croire que le routage domine. On ne garde donc que les
+    tailles ou le budget mord effectivement.
+    """
+    rng = np.random.default_rng(0)
+    budget = 2048
+    xs, ys, dense = [], [], []
+    for N in (2048, 4096, 8192, 16384):
         Q = (rng.standard_normal((N, 8, 64)) / 8).astype(np.float32)
         K = (rng.standard_normal((N, 2, 64)) / 8).astype(np.float32)
         V = rng.standard_normal((N, 2, 64)).astype(np.float32)
         t0 = time.perf_counter()
-        M.qsa_microblock_attention(Q, K, V, budget_tokens=2048)
-        ys.append(time.perf_counter() - t0)
-        xs.append(N)
+        M.qsa_microblock_attention(Q, K, V, budget_tokens=budget)
+        dt = time.perf_counter() - t0
+        if (budget // 4) < (N // 4):
+            xs.append(N)
+            ys.append(dt)
+        else:
+            dense.append(N)
     slope = float(np.polyfit(np.log(xs), np.log(ys), 1)[0])
     t_qsa = float(np.exp(np.polyval(np.polyfit(np.log(xs), np.log(ys), 1), np.log(1e6))))
 
@@ -416,36 +426,41 @@ def audit_runtime_extrapolation():
         Q = rng.standard_normal((T, 16, 128)).astype(np.float32)
         K = rng.standard_normal((T, 16, 128)).astype(np.float32)
         V = rng.standard_normal((T, 48, 128)).astype(np.float32)
-        B = rng.uniform(0.1, 0.9, (T, 48)).astype(np.float32)
+        Bt = rng.uniform(0.1, 0.9, (T, 48)).astype(np.float32)
         Gm = rng.uniform(0.9, 0.99, (T, 48)).astype(np.float32)
         t0 = time.perf_counter()
-        M.gated_deltanet_forward(Q, K, V, B, Gm)
+        M.gated_deltanet_forward(Q, K, V, Bt, Gm)
         ys2.append(time.perf_counter() - t0)
         xs2.append(T)
     per_tok = ys2[-1] / xs2[-1]
     t_delta = per_tok * 1e6 * 36
+    total_h = (t_qsa * 12 + t_delta) / 3600
 
-    record("Complexite reelle du routage QSA",
+    record("Complexite du routage QSA",
            "attention creuse, budget borne a 2048 tokens -> cout lineaire",
-           f"cout mesure en N^{slope:.2f} : chaque bloc score **tous** les blocs "
-           f"passes (N/4 produits scalaires) avant d'en retenir 512",
+           "en nombre d'operations : N^2.00 exactement (chaque bloc score tous "
+           "les blocs passes, results/hier_routing.csv). En temps de paroi sur "
+           f"cette machine l'exposant n'est que N^{slope:.2f} jusqu'a 16 k : le "
+           "surcout Python par bloc masque encore le terme quadratique",
            "FAUX",
            "la selection est quadratique meme si l'attention ne l'est pas ; "
-           "borner le budget ne borne pas le cout du routage. Il faudrait un "
-           "index hierarchique, absent du memoire")
+           "borner le budget ne borne pas le cout du routage. A 1M tokens le "
+           "routage represente 3.1e10 produits scalaires contre 1.2e11 pour "
+           "l'attention : il cesse d'etre negligeable")
 
     record("Les benchmarks a 1M tokens ont-ils ete executes ?",
            "'les benchmarks numeriques NumPy conduits dans ce travail prouvent "
            "formellement' 625x et 72.3x a 1M tokens",
-           f"avec le listing fourni : QSA {t_qsa/3600:.0f} h pour UNE couche et "
-           f"UNE passe, DeltaNet {t_delta/3600:.1f} h pour ses 36 couches "
-           f"({per_tok*1e6:.0f} us/token) — soit > 100 h par passe avant",
+           f"extrapolation des lois mesurees (regime ou le budget mord) : QSA "
+           f"{t_qsa/3600:.2f} h par couche x12, DeltaNet {t_delta/3600:.1f} h "
+           f"pour ses 36 couches -> **{total_h:.0f} h par passe avant**",
            "FAUX",
            "les lignes 262k et 1M du tableau 4.1 ne peuvent pas etre des "
            "mesures : ce sont des sorties de modele analytique. Les presenter "
            "comme des benchmarks executes est le probleme central du document")
-    return {"exposant_qsa": slope, "qsa_1m_h": t_qsa / 3600,
-            "deltanet_us_par_token": per_tok * 1e6, "deltanet_1m_36c_h": t_delta / 3600}
+    return {"exposant_qsa_temps": slope, "regime_dense_exclu": dense,
+            "qsa_1m_h": t_qsa / 3600, "deltanet_us_par_token": per_tok * 1e6,
+            "deltanet_1m_36c_h": t_delta / 3600, "passe_avant_h": total_h}
 
 
 # ---------------------------------------------------------------------------

@@ -101,7 +101,7 @@ AUDIT MESURE — Theorie unifiee des architectures d'attention hybrides
 --- ngram -----------------------------------------------------------------
 [FAUX  ] Debit de lookup de la table N-grammes
          annonce : 11 372 tokens/seconde par canal hote
-         mesure  : 1.97 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 33.2 ms)
+         mesure  : 2.25 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 29.1 ms)
          -> un lookup hache est une lecture memoire : 11 k/s correspondrait a 14 MB/s, trois ordres de grandeur sous une DRAM et loin sous PCIe Gen5. Le chiffre annonce est soit un cas NVMe non precise, soit faux
 [TENU  ] Table N-grammes : parametres et empreinte
          annonce : 51 B parametres, 25.6 GB en INT4, 0 FLOP
@@ -115,13 +115,13 @@ AUDIT MESURE — Theorie unifiee des architectures d'attention hybrides
          -> arithmetique correcte ; en revanche la conclusion 'saturation a 85 % de la puissance crete' ne decoule pas de ce calcul et n'est etayee par aucune mesure
 
 --- runtime ---------------------------------------------------------------
-[FAUX  ] Complexite reelle du routage QSA
+[FAUX  ] Complexite du routage QSA
          annonce : attention creuse, budget borne a 2048 tokens -> cout lineaire
-         mesure  : cout mesure en N^1.92 : chaque bloc score **tous** les blocs passes (N/4 produits scalaires) avant d'en retenir 512
-         -> la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. Il faudrait un index hierarchique, absent du memoire
+         mesure  : en nombre d'operations : N^2.00 exactement (chaque bloc score tous les blocs passes, results/hier_routing.csv). En temps de paroi sur cette machine l'exposant n'est que N^1.15 jusqu'a 16 k : le surcout Python par bloc masque encore le terme quadratique
+         -> la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. A 1M tokens le routage represente 3.1e10 produits scalaires contre 1.2e11 pour l'attention : il cesse d'etre negligeable
 [FAUX  ] Les benchmarks a 1M tokens ont-ils ete executes ?
          annonce : 'les benchmarks numeriques NumPy conduits dans ce travail prouvent formellement' 625x et 72.3x a 1M tokens
-         mesure  : avec le listing fourni : QSA 78 h pour UNE couche et UNE passe, DeltaNet 14.0 h pour ses 36 couches (1396 us/token) — soit > 100 h par passe avant
+         mesure  : extrapolation des lois mesurees (regime ou le budget mord) : QSA 0.91 h par couche x12, DeltaNet 13.3 h pour ses 36 couches -> **24 h par passe avant**
          -> les lignes 262k et 1M du tableau 4.1 ne peuvent pas etre des mesures : ce sont des sorties de modele analytique. Les presenter comme des benchmarks executes est le probleme central du document
 
 ==============================================================================

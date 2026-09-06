@@ -1,0 +1,137 @@
+[
+  {
+    "N": 2048,
+    "variante": "memoire",
+    "secondes": 0.8252,
+    "tokens_par_s": 2481.9,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.2623,
+    "masse_min": 0.2495
+  },
+  {
+    "N": 2048,
+    "variante": "corrige (numpy)",
+    "secondes": 0.9349,
+    "tokens_par_s": 2190.7,
+    "gain_vs_memoire": 0.883,
+    "masse_moyenne": 0.2604,
+    "masse_min": 0.2382
+  },
+  {
+    "N": 2048,
+    "variante": "spur",
+    "secondes": 0.664,
+    "tokens_par_s": 3084.4,
+    "gain_vs_memoire": 1.243,
+    "masse_moyenne": 0.2604,
+    "masse_min": 0.2382
+  },
+  {
+    "N": 2048,
+    "variante": "spur groupe 4",
+    "secondes": 0.2842,
+    "tokens_par_s": 7207.4,
+    "gain_vs_memoire": 2.904,
+    "masse_moyenne": 0.2601,
+    "masse_min": 0.2383
+  },
+  {
+    "N": 2048,
+    "variante": "spur groupe 16",
+    "secondes": 0.1609,
+    "tokens_par_s": 12728.5,
+    "gain_vs_memoire": 5.128,
+    "masse_moyenne": 0.2611,
+    "masse_min": 0.2499
+  },
+  {
+    "N": 4096,
+    "variante": "memoire",
+    "secondes": 1.7953,
+    "tokens_par_s": 2281.5,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.128,
+    "masse_min": 0.1247
+  },
+  {
+    "N": 4096,
+    "variante": "corrige (numpy)",
+    "secondes": 1.9901,
+    "tokens_par_s": 2058.2,
+    "gain_vs_memoire": 0.902,
+    "masse_moyenne": 0.1273,
+    "masse_min": 0.1201
+  },
+  {
+    "N": 4096,
+    "variante": "spur",
+    "secondes": 1.4671,
+    "tokens_par_s": 2792.0,
+    "gain_vs_memoire": 1.224,
+    "masse_moyenne": 0.1273,
+    "masse_min": 0.1201
+  },
+  {
+    "N": 4096,
+    "variante": "spur groupe 4",
+    "secondes": 0.4618,
+    "tokens_par_s": 8870.5,
+    "gain_vs_memoire": 3.888,
+    "masse_moyenne": 0.1274,
+    "masse_min": 0.1181
+  },
+  {
+    "N": 4096,
+    "variante": "spur groupe 16",
+    "secondes": 0.2167,
+    "tokens_par_s": 18900.7,
+    "gain_vs_memoire": 8.284,
+    "masse_moyenne": 0.128,
+    "masse_min": 0.1248
+  },
+  {
+    "N": 8192,
+    "variante": "memoire",
+    "secondes": 3.8749,
+    "tokens_par_s": 2114.1,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0623
+  },
+  {
+    "N": 8192,
+    "variante": "corrige (numpy)",
+    "secondes": 4.1991,
+    "tokens_par_s": 1950.9,
+    "gain_vs_memoire": 0.923,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0605
+  },
+  {
+    "N": 8192,
+    "variante": "spur",
+    "secondes": 2.7491,
+    "tokens_par_s": 2979.9,
+    "gain_vs_memoire": 1.41,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0605
+  },
+  {
+    "N": 8192,
+    "variante": "spur groupe 4",
+    "secondes": 0.9234,
+    "tokens_par_s": 8871.5,
+    "gain_vs_memoire": 4.196,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0612
+  },
+  {
+    "N": 8192,
+    "variante": "spur groupe 16",
+    "secondes": 0.3944,
+    "tokens_par_s": 20772.4,
+    "gain_vs_memoire": 9.825,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0624
+  }
+]

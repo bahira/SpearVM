@@ -143,7 +143,7 @@
     {
       "claim": "Debit de lookup de la table N-grammes",
       "stated": "11 372 tokens/seconde par canal hote",
-      "measured": "1.97 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 33.2 ms)",
+      "measured": "2.25 M tokens/s en RAM sur cette machine (83.9 MB rapatries en 29.1 ms)",
       "verdict": "FAUX",
       "note": "un lookup hache est une lecture memoire : 11 k/s correspondrait a 14 MB/s, trois ordres de grandeur sous une DRAM et loin sous PCIe Gen5. Le chiffre annonce est soit un cas NVMe non precise, soit faux"
     },
@@ -162,16 +162,16 @@
       "note": "arithmetique correcte ; en revanche la conclusion 'saturation a 85 % de la puissance crete' ne decoule pas de ce calcul et n'est etayee par aucune mesure"
     },
     {
-      "claim": "Complexite reelle du routage QSA",
+      "claim": "Complexite du routage QSA",
       "stated": "attention creuse, budget borne a 2048 tokens -> cout lineaire",
-      "measured": "cout mesure en N^1.92 : chaque bloc score **tous** les blocs passes (N/4 produits scalaires) avant d'en retenir 512",
+      "measured": "en nombre d'operations : N^2.00 exactement (chaque bloc score tous les blocs passes, results/hier_routing.csv). En temps de paroi sur cette machine l'exposant n'est que N^1.15 jusqu'a 16 k : le surcout Python par bloc masque encore le terme quadratique",
       "verdict": "FAUX",
-      "note": "la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. Il faudrait un index hierarchique, absent du memoire"
+      "note": "la selection est quadratique meme si l'attention ne l'est pas ; borner le budget ne borne pas le cout du routage. A 1M tokens le routage represente 3.1e10 produits scalaires contre 1.2e11 pour l'attention : il cesse d'etre negligeable"
     },
     {
       "claim": "Les benchmarks a 1M tokens ont-ils ete executes ?",
       "stated": "'les benchmarks numeriques NumPy conduits dans ce travail prouvent formellement' 625x et 72.3x a 1M tokens",
-      "measured": "avec le listing fourni : QSA 78 h pour UNE couche et UNE passe, DeltaNet 14.0 h pour ses 36 couches (1396 us/token) \u2014 soit > 100 h par passe avant",
+      "measured": "extrapolation des lois mesurees (regime ou le budget mord) : QSA 0.91 h par couche x12, DeltaNet 13.3 h pour ses 36 couches -> **24 h par passe avant**",
       "verdict": "FAUX",
       "note": "les lignes 262k et 1M du tableau 4.1 ne peuvent pas etre des mesures : ce sont des sorties de modele analytique. Les presenter comme des benchmarks executes est le probleme central du document"
     }
@@ -328,16 +328,20 @@
       "recall_min": 0.2475480900486045
     },
     "ngram": {
-      "debit_ram_tok_s": 1973408.4298472647
+      "debit_ram_tok_s": 2252250.7041410888
     },
     "amdahl": {
       "amdahl": 6.413612565445027
     },
     "runtime": {
-      "exposant_qsa": 1.9213305911509704,
-      "qsa_1m_h": 77.90270531336745,
-      "deltanet_us_par_token": 1396.321821289348,
-      "deltanet_1m_36c_h": 13.96321821289348
+      "exposant_qsa_temps": 1.149274461586932,
+      "regime_dense_exclu": [
+        2048
+      ],
+      "qsa_1m_h": 0.9119008593385127,
+      "deltanet_us_par_token": 1326.5620400391142,
+      "deltanet_1m_36c_h": 13.265620400391143,
+      "passe_avant_h": 24.208430712453296
     }
   }
 }

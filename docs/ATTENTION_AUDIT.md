@@ -15,6 +15,9 @@ cd experiments/attention && OMP_NUM_THREADS=2 python audit.py
 ```
 
 **Synthèse : 25 affirmations testées — 11 fausses, 8 à nuancer, 2 lacunes, 4 tenues.**
+Le §6 propose l'index hiérarchique manquant et le §7 mesure l'architecture
+complète une fois corrigée : **×10.6** sur le listing d'origine, à qualité
+identique.
 
 Le mémoire contient de vraies bonnes idées (le ratio hybride 3:1, l'état
 récurrent O(1), le routage par micro-blocs, la contrainte orthogonale sur les
@@ -33,19 +36,35 @@ J'ai chronométré le listing fourni et extrapolé sa loi d'échelle mesurée :
 
 | Module (listing du mémoire) | coût mesuré | extrapolation à N = 1 M |
 | --- | --- | --- |
-| QSA / IndexPool | N^1.92 (256 → 2048) | **78 h pour une seule couche, une seule passe** |
-| Gated DeltaNet | 1 396 µs/token (linéaire ✓) | **14 h pour ses 36 couches** |
+| QSA / IndexPool | N^1.15 (4 k → 16 k, régime où le budget mord) | **0.91 h par couche**, ×12 couches |
+| Gated DeltaNet | 1 385 µs/token (linéaire ✓) | **13.3 h pour ses 36 couches** |
 
-Plus de 100 heures pour une passe avant. Les lignes 262 k et 1 M du tableau 4.1
-sont donc des **sorties de modèle analytique**, pas des mesures. Un modèle
-analytique est parfaitement légitime — il faut simplement l'annoncer comme tel.
-Présenté comme un benchmark exécuté, il invalide la section « validation ».
+Soit **≈ 24 h pour une seule passe avant** à 1 M tokens. Les lignes 262 k et 1 M
+du tableau 4.1 sont donc des **sorties de modèle analytique**, pas des mesures.
+Un modèle analytique est parfaitement légitime — il faut simplement l'annoncer
+comme tel. Présenté comme un benchmark exécuté, il invalide la section
+« validation ».
 
-Corollaire mesuré et plus gênant : le coût du routage QSA croît en **N^1.92**.
-Chaque micro-bloc score *tous* les blocs passés (N/4 produits scalaires) avant
-d'en retenir 512. Borner le budget d'attention ne borne pas le coût de la
-sélection : l'architecture reste quadratique. Il faudrait un index hiérarchique,
-absent du mémoire.
+> **Correction d'une erreur de cet audit.** La première version de ce rapport
+> annonçait « 78 h pour une seule couche », mesuré à N ≤ 2048 avec un budget de
+> 2048 tokens. Dans ce régime le budget **ne mord pas** (N/4 ≤ budget/4) :
+> l'attention dite creuse était en fait dense, ce qui gonflait l'exposant à
+> N^1.92 et le temps extrapolé d'un facteur ~80. La mesure corrigée n'utilise
+> que les tailles où le budget est réellement contraignant. La conclusion tient
+> — 24 h par passe reste incompatible avec « benchmarks conduits » — mais le
+> chiffre initial était faux, et le signaler fait partie du même contrat que
+> celui exigé du mémoire.
+
+Corollaire mesuré et plus gênant, celui-là robuste : le coût du routage QSA est
+**quadratique en nombre d'opérations** — N^2.00 exactement, compté et non
+chronométré (`results/hier_routing.csv`). Chaque micro-bloc score *tous* les
+blocs passés (N/4 produits scalaires) avant d'en retenir 512. Borner le budget
+d'attention ne borne pas le coût de la sélection. À 1 M tokens cela représente
+3.1 × 10¹⁰ produits scalaires de routage contre 1.2 × 10¹¹ pour l'attention
+elle-même : le routage cesse d'être un détail. En temps de paroi jusqu'à 16 k
+l'exposant n'est que N^1.15, car le surcoût Python par bloc masque encore le
+terme quadratique — raison de plus pour compter les opérations plutôt que de
+chronométrer.
 
 ## 2. Verdicts
 
@@ -70,12 +89,12 @@ absent du mémoire.
 | 17 | Muon : orthogonalisation (6 iters) | orthogonalisation | défaut 0.521 ; il en faut ≈ 15 | **FAUX** |
 | 18 | Newton-Schulz « ordre 3/5 » | — | seul l'ordre 3 est implémenté ; le quintique plafonne à 0.33 | NUANCE |
 | 19 | Causalité du listing QSA | modèle autorégressif | fuite de 3 tokens futurs par position | **FAUX** |
-| 20 | Fidélité du routage IndexPool | non mesurée | 59.5 % de la masse d'attention capturée en moyenne, 24.8 % au pire | LACUNE |
+| 20 | Fidélité du routage IndexPool | non mesurée | 6.3 % de la masse captée à N=8192 (budget 512) | LACUNE |
 | 21 | Débit table N-grammes | 11 372 tokens/s | 1.9 M tokens/s en RAM | **FAUX** |
 | 22 | Table N-grammes : 51 B / 25.6 GB / 0 FLOP | — | 51.2 B / 25.6 GB / 0 FLOP | **TENU** |
 | 23 | Amdahl p=0.88, s=24.5 | 6.41× | 6.414× | **TENU** |
-| 24 | Routage QSA linéaire | budget borné | N^1.92 mesuré | **FAUX** |
-| 25 | Benchmarks 1M exécutés | « prouvent formellement » | > 100 h/passe avec le listing | **FAUX** |
+| 24 | Routage QSA linéaire | budget borné | N^2.00 en nombre d'opérations | **FAUX** |
+| 25 | Benchmarks 1M exécutés | « prouvent formellement » | ≈ 24 h/passe avec le listing | **FAUX** |
 
 ## 3. Les trois erreurs qui comptent
 
@@ -130,8 +149,13 @@ perdu**. J'ai donc mesuré la fidélité du routage IndexPool : fraction de la m
 d'attention exacte capturée par les blocs sélectionnés (N = 1024, budget 256
 tokens, par tête) :
 
-* **59.5 %** en moyenne, **24.8 %** au pire ;
-* écart maximal à l'attention dense causale : 8.3 %.
+* sur les **premiers** blocs (qui tiennent dans le budget) : 84.6 % — métrique
+  trompeuse, ils sélectionnent quasiment tout ce qui existe ;
+* sur les **derniers** blocs, là où le budget mord réellement : **26.2 %** à
+  N = 2048, **12.8 %** à N = 4096, **6.3 %** à N = 8192 — la masse captée
+  s'effondre mécaniquement quand le budget devient une fraction décroissante du
+  contexte ;
+* écart maximal à l'attention dense causale : 8.3 % à N = 1024.
 
 C'est le seul arbitrage qui compte pour une architecture d'attention creuse, et
 il est absent. Un facteur 625× sur le KV cache ne veut rien dire sans la perte de
@@ -225,6 +249,48 @@ Reste une limite honnête : ces mesures s'arrêtent à N = 32 768, et le facteur
 118× à 1 M est une extrapolation de lois d'échelle mesurées, pas une exécution.
 C'est précisément la distinction que ce rapport reproche au mémoire de ne pas
 faire — elle vaut aussi pour lui.
+
+
+## 7. Bout-en-bout : l'architecture du mémoire, écrite correctement
+
+Dernière étape de la boucle : reprendre QSA avec les correctifs de l'audit
+(masque causal intra-bloc, routage hiérarchique) et les noyaux du dépôt
+(`spur_math.attention_tile` : GEMM NT + softmax masqué en C, voir
+[`TRANSCEND.md`](TRANSCEND.md)), puis mesurer — `experiments/attention/bench_qsa_e2e.py`.
+
+| N = 8192, budget 512 | temps | débit | gain | masse captée |
+| --- | --- | --- | --- | --- |
+| listing du mémoire | 3 908 ms | 2 096 tok/s | ×1.00 | 6.3 % |
+| corrigé, attention numpy | 4 082 ms | 2 007 tok/s | ×0.96 | 6.3 % |
+| corrigé + noyaux SpearVM | 2 715 ms | 3 018 tok/s | ×1.44 | 6.3 % |
+| + routage partagé par 4 blocs | 882 ms | 9 288 tok/s | ×4.43 | 6.3 % |
+| **+ routage partagé par 16 blocs** | **368 ms** | **22 251 tok/s** | **×10.62** | **6.3 %** |
+
+Deux enseignements, tous deux mesurés :
+
+**Le routage hiérarchique ne coûte rien en qualité.** La masse d'attention
+captée est identique à celle du routage exhaustif (6.3 % contre 6.3 % ; 12.7 %
+contre 12.8 % à N = 4096). Ce qui limite la qualité, ce n'est pas le routeur,
+c'est le **budget** : à N = 8192 avec 512 tokens, le modèle ne voit que 6 % de
+la masse d'attention réelle. Le mémoire ne mesure jamais cette quantité, et
+c'est pourtant elle qui décide si l'architecture est utilisable.
+
+*(Cette mesure a d'abord été faite sur les 128 premiers blocs et donnait
+« 100 % » : les premiers blocs d'une séquence tiennent entièrement dans le
+budget, la métrique y est vide de sens. Elle est désormais prise sur les
+derniers blocs.)*
+
+**Partager une décision de routage entre blocs de requêtes voisins est
+gratuit.** Seize micro-blocs consécutifs (64 tokens) attendent presque le même
+contexte : router une fois pour les seize ne change pas la masse captée
+(6.3 %) et fait passer la tuile de 4 à 64 lignes — le régime où le noyau C
+atteint 94 à 123 GFLOPS au lieu de 12. D'où le ×10.6 total.
+
+Aucune extrapolation à 1 M n'est donnée ici : le débit *monte* avec N sur ces
+tailles (le surcoût Python par tuile s'amortit), un ajustement en loi de
+puissance donnerait un exposant < 1, ce qui n'a pas de sens. La loi d'échelle
+rigoureuse reste celle du comptage d'opérations (§6), pas celle du temps de
+paroi à ces tailles.
 
 ---
 

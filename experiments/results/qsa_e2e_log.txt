@@ -1,0 +1,37 @@
+==============================================================================
+QSA bout-en-bout : listing du memoire contre version corrigee + noyaux
+==============================================================================
+
+--- N = 2048, budget 512 tokens
+  memoire             825.2 ms       2482 tok/s  x 1.00  masse  26.2 %
+  corrige (numpy)     934.9 ms       2191 tok/s  x 0.88  masse  26.0 %
+  spur                664.0 ms       3084 tok/s  x 1.24  masse  26.0 %
+  spur groupe 4       284.2 ms       7207 tok/s  x 2.90  masse  26.0 %
+  spur groupe 16      160.9 ms      12728 tok/s  x 5.13  masse  26.1 %
+
+--- N = 4096, budget 512 tokens
+  memoire            1795.3 ms       2282 tok/s  x 1.00  masse  12.8 %
+  corrige (numpy)    1990.1 ms       2058 tok/s  x 0.90  masse  12.7 %
+  spur               1467.1 ms       2792 tok/s  x 1.22  masse  12.7 %
+  spur groupe 4       461.8 ms       8870 tok/s  x 3.89  masse  12.7 %
+  spur groupe 16      216.7 ms      18901 tok/s  x 8.28  masse  12.8 %
+
+--- N = 8192, budget 512 tokens
+  memoire            3874.9 ms       2114 tok/s  x 1.00  masse   6.3 %
+  corrige (numpy)    4199.1 ms       1951 tok/s  x 0.92  masse   6.3 %
+  spur               2749.1 ms       2980 tok/s  x 1.41  masse   6.3 %
+  spur groupe 4       923.4 ms       8872 tok/s  x 4.20  masse   6.3 %
+  spur groupe 16      394.4 ms      20772 tok/s  x 9.82  masse   6.3 %
+
+### Debit mesure (et pourquoi on n'extrapole pas ici)
+  memoire          : 2482 -> 2282 -> 2114 tok/s (N croissant), soit 2114 tok/s a N=8192
+  spur             : 3084 -> 2792 -> 2980 tok/s (N croissant), soit 2980 tok/s a N=8192
+  spur groupe 16   : 12728 -> 18901 -> 20772 tok/s (N croissant), soit 20772 tok/s a N=8192
+  Le debit MONTE avec N pour les variantes groupees : le surcout
+  Python par tuile s'amortit. Un ajustement en loi de puissance
+  donnerait un exposant < 1, ce qui n'a aucun sens physique — le
+  terme de routage finira par dominer. On ne l'extrapole donc pas :
+  la loi d'echelle rigoureuse est celle du COMPTAGE d'operations
+  (bench_hier.py), pas celle du temps de paroi a ces tailles.
+
+-> results/qsa_e2e.csv

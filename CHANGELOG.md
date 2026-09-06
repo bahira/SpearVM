@@ -1,6 +1,12 @@
 # Changelog
 
 ## non publie
+- **audit d'architecture bout-en-bout** (`docs/ATTENTION_AUDIT.md`) : index
+  hierarchique manquant implemente (routage **N^1.30 contre N^2.00**, 11.7x
+  moins d'operations a N=32768) puis QSA complet reecrit avec les correctifs et
+  les noyaux du depot : **x10.6 sur le listing d'origine, a masse d'attention
+  identique**. Une erreur de l'audit lui-meme (regime dense non detecte, 78 h
+  annoncees au lieu de 24 h) est corrigee et signalee dans le rapport.
 - **`exp` AVX2 minimax : 1.69 ulp en f32 (libm : 1.66), x1.2 a x1.9** — polynome
   cherche par iterations de Remez en erreur relative, degre choisi par mesure
   (5 en f32, 10 en f64) ; reduction d'argument ln2 scindee hi/lo, 2^k par champ
