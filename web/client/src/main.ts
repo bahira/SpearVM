@@ -13,6 +13,7 @@ import { SimSocket, type HelloMessage, type LinkState, type ParamSpec, type SimD
 import { createLocalEngine, type LocalEngine } from './local/engines';
 import { FlowFieldScene } from './scenes/flowField';
 import { ImplicitFieldScene } from './scenes/implicitField';
+import { AttentionLabScene } from './scenes/attentionLab';
 import { WaveFieldScene } from './scenes/waveField';
 import { TrainerScene } from './scenes/trainer';
 import { KernelLabScene } from './scenes/kernelLab';
@@ -67,6 +68,16 @@ const TABS: TabDef[] = [
       'Un reseau apprend une surface cible en direct : matmul_nt_gelu en forward, gelu_backward + matmul_backward en backward, Adam pour la mise a jour.',
     kernels: ['matmul_nt_gelu', 'gelu_backward', 'matmul_backward'],
     factory: () => new TrainerScene(),
+  },
+  {
+    id: 'attention',
+    icon: '⧉',
+    title: 'Attention Lab',
+    subtitle: 'decodage reel : carte d\'attention et cout du format',
+    description:
+      "Un bloc de decodeur SpearVM decode token apres token sur un cache KV packe. La carte d'attention reellement calculee est rendue telle quelle, et le format des poids (f32 / bf16 / int8) fait bouger le debit en direct.",
+    kernels: ['attention_mha', 'KVCache', 'QuantizedWeight', 'softmax'],
+    factory: () => new AttentionLabScene(),
   },
   {
     id: 'kernellab',

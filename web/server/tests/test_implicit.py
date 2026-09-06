@@ -130,3 +130,46 @@ def test_changement_de_primitive_sans_realloc():
     second = _volume(sim.step(0.1), 32)
     assert not np.allclose(first, second)
     assert second.shape == (32, 32, 32)
+
+
+# --- Attention Lab -----------------------------------------------------------
+@pytest.mark.parametrize("fmt", ["f32", "bf16", "i8"])
+def test_attention_lab_formats(fmt):
+    """Les trois formats doivent produire la meme structure d'attention."""
+    sim = create("attention", {"format": fmt, "context": 256, "heads": 4,
+                               "kv_heads": 2, "d_head": 32, "d_ff": 512})
+    frame = sim.step(0.1)
+    assert frame.kind == "attention_map"
+    assert frame.shape == (4, 256)
+    w = (frame.payload.astype(np.float32) * frame.scale).reshape(4, 256)
+    assert np.all(w >= 0.0)
+    for h in range(4):
+        assert w[h].sum() == pytest.approx(1.0, abs=2e-3), "chaque tete somme a 1"
+    assert frame.stats["format"] == fmt
+    assert frame.stats["tokens_par_s"] > 0
+    assert frame.stats["poids_Mo"] > 0
+
+
+def test_attention_lab_quantification_reduit_l_empreinte():
+    def poids(fmt):
+        return create("attention", {"format": fmt, "context": 256, "heads": 4,
+                                    "kv_heads": 2, "d_head": 32,
+                                    "d_ff": 512}).step(0.1).stats["poids_Mo"]
+    f32, bf16, i8 = poids("f32"), poids("bf16"), poids("i8")
+    assert bf16 == pytest.approx(f32 / 2, rel=0.02)
+    assert i8 == pytest.approx(f32 / 4, rel=0.05)
+
+
+def test_attention_lab_temperature_concentre_l_attention():
+    """Le piquant des requetes doit reellement changer l'entropie mesuree."""
+    def entropie(t):
+        sim = create("attention", {"format": "f32", "context": 512, "heads": 4,
+                                   "kv_heads": 2, "d_head": 32, "d_ff": 512,
+                                   "temperature": t})
+        for _ in range(4):
+            f = sim.step(0.1)
+        return f.stats["entropie"]
+    plate, piquee = entropie(0.5), entropie(6.0)
+    assert plate > 0.95, "a faible temperature l'attention doit rester etalee"
+    assert piquee < 0.7, "a forte temperature elle doit se concentrer"
+    assert piquee < plate

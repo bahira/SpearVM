@@ -5,19 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 from .base import Frame, ParamSpec, Simulation
+from .attention_lab import AttentionLabSim
 from .flow_field import FlowFieldSim
 from .implicit_field import ImplicitFieldSim
 from .trainer import TrainerSim
 from .wave_field import WaveFieldSim
 
 REGISTRY: dict[str, type[Simulation]] = {
-    cls.sim_id: cls for cls in (FlowFieldSim, ImplicitFieldSim, WaveFieldSim, TrainerSim)
+    cls.sim_id: cls for cls in (FlowFieldSim, ImplicitFieldSim, WaveFieldSim,
+                                TrainerSim, AttentionLabSim)
 }
 
 __all__ = [
     "Frame",
     "ParamSpec",
     "Simulation",
+    "AttentionLabSim",
     "FlowFieldSim",
     "ImplicitFieldSim",
     "WaveFieldSim",

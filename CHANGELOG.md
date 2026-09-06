@@ -1,6 +1,13 @@
 # Changelog
 
 ## non publie
+- **`web/` — 6e cas d'usage : Attention Lab** — un bloc de decodeur SpearVM
+  decode reellement token apres token (attention multi-tetes sur `KVCache`
+  packe + FFN) et pousse la carte d'attention **effectivement calculee**
+  (tetes x positions, 8 Ko par frame). Le format des poids se change en direct
+  et le debit suit : 791 tok/s en f32, 1 238 en bf16, 1 576 en int8 sur 2 vCPU.
+  6 tests dedies (somme a 1 par tete, empreinte /2 et /4, et le fait que le
+  piquant des requetes change reellement l'entropie mesuree).
 - **poids quantifies bf16 / int8** (`spur_math.QuantizedWeight`) — a m petit un
   GEMM ne fait que 2.m flops par poids lu : le temps est decide par le nombre
   d'octets, pas d'operations. int8 (echelle **par ligne de sortie**) donne
