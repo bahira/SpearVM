@@ -41,6 +41,8 @@ _auth: AuthService = build_auth_service(
 try:
     _rate_limiter = RedisRateLimiter(settings.redis_url) if settings.redis_url else MemoryRateLimiter()
 except Exception:
+    if settings.redis_url:
+        raise
     _rate_limiter = MemoryRateLimiter()
 
 
@@ -145,7 +147,13 @@ def ready() -> JSONResponse:
     """Readiness endpoint suitable for load balancers and container probes."""
     try:
         backend = get_kernels()
-        return JSONResponse({"status": "ready", "backend": backend.capabilities()})
+        dependencies = {}
+        for name, component in (("database", _auth.store), ("redis", _rate_limiter)):
+            ping = getattr(component, "ping", None)
+            if ping is not None:
+                ping()
+                dependencies[name] = "ok"
+        return JSONResponse({"status": "ready", "backend": backend.capabilities(), "dependencies": dependencies})
     except Exception as exc:  # noqa: BLE001 - probes must return a useful 503
         log.exception("readiness check failed")
         return JSONResponse({"status": "not_ready", "error": str(exc)}, status_code=503)

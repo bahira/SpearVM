@@ -79,7 +79,7 @@ class MemoryKeyStore:
     def revoke(self, key_id: str) -> None:
         key = self._keys.get(key_id)
         if key:
-            self._keys[key_id] = ApiKey(key.key_id, key.tenant_id, key.digest, time.time())
+            self._keys[key_id] = ApiKey(key.key_id, key.tenant_id, key.digest, time.time(), key.role)
 
 
 class PostgresKeyStore:
@@ -105,6 +105,10 @@ class PostgresKeyStore:
 
     def _connect(self):
         return self._psycopg.connect(self.url)
+
+    def ping(self) -> None:
+        with self._connect() as conn:
+            conn.execute("SELECT 1")
 
     def list_active(self) -> list[ApiKey]:
         with self._connect() as conn:
@@ -203,6 +207,9 @@ class RedisRateLimiter(RateLimiter):
         import redis
 
         self.client = redis.Redis.from_url(url, decode_responses=True)
+
+    def ping(self) -> None:
+        self.client.ping()
 
     def allow(self, tenant_id: str, limit: int, window_s: int = 60) -> bool:
         bucket = int(time.time() // window_s)
