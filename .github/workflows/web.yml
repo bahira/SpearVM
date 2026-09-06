@@ -1,0 +1,73 @@
+name: Simulation Lab
+
+on:
+  push:
+    paths:
+      - 'web/**'
+      - 'src/spur_kernels.c'
+      - 'spur_math/**'
+      - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'src/spur_kernels.c'
+      - 'spur_math/**'
+      - '.github/workflows/web.yml'
+
+jobs:
+  server:
+    name: Serveur de simulation (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Compile les noyaux AVX2
+        run: |
+          gcc -O3 -mavx2 -mfma -fopenmp -shared -fPIC \
+              -o spur_math/libspur_kernels.so src/spur_kernels.c -lm
+
+      - name: Dependances
+        run: pip install -r web/server/requirements-dev.txt
+
+      - name: Tests (noyaux, protocole, simulations, API)
+        working-directory: web/server
+        env:
+          OMP_WAIT_POLICY: PASSIVE
+        run: python -m pytest tests -v
+
+      - name: Tests en mode repli numpy (sans noyaux natifs)
+        working-directory: web/server
+        env:
+          SPEARVM_FORCE_FALLBACK: "1"
+        run: python -m pytest tests/test_sims.py tests/test_api.py -q
+
+  client:
+    name: Client Three.js (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/client/package-lock.json
+
+      - name: Install
+        working-directory: web/client
+        run: npm ci
+
+      - name: Typecheck + build production
+        working-directory: web/client
+        run: npm run build
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: simulation-lab-dist
+          path: web/client/dist
+          retention-days: 7

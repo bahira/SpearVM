@@ -100,6 +100,30 @@ gcc -O3 -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn
 OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
 ```
 
+## Simulation Lab — 4 cas d'usage Three.js (`web/`)
+
+Démos temps réel **prêtes pour la production** où la physique est calculée par
+les noyaux SIMD et le rendu par le GPU : serveur FastAPI + WebSocket binaire,
+client Vite/TypeScript/Three.js.
+
+| Cas d'usage | Noyaux SpearVM | Rendu |
+|---|---|---|
+| **Champ de flux neuronal** | `matmul_nt_gelu` ×2 couches sur une grille 3D → potentiel vecteur, `rot`, `tanh` | 16 k→262 k particules advectées en ping-pong GPU dans une texture 3D |
+| **Membrane non linéaire** | équation des ondes + saturation `tanh` par sous-pas | maillage déplacé depuis une texture R32F, 1 vertex = 1 cellule |
+| **Entraînement live** | `matmul_nt` + `gelu`, `gelu_backward` + `matmul_backward`, Adam | surface prédite colorée par l'erreur + cible filaire + courbe de perte |
+| **Kernel Lab** | banc d'essai : débit vs numpy, erreur vs IEEE, GFLOPS, gradcheck | barres 3D et courbes d'erreur log |
+
+```bash
+make web-install     # venv + noyaux + npm install
+make web-serve       # serveur de calcul  :8000
+make web-dev         # front (proxy /api et /ws)  :5173
+make web-test        # 40 tests serveur + typecheck client
+```
+
+Dégradation propre : noyaux AVX2 → repli numpy exact → moteur JavaScript local
+si le serveur est injoignable ; le bandeau affiche toujours le mode réel.
+Détails, protocole binaire et déploiement Docker : [`web/README.md`](web/README.md).
+
 ## Précision (datasheet)
 
 Chaque noyau documente son erreur max vs IEEE :
@@ -188,6 +212,8 @@ src/spur_kernels.c    Kernels AVX2 vectorisés + OpenMP
 include/spur.h        API publique
 examples/             Benchmarks et démos
 tests/                Tests de correction
+web/server/           Serveur de simulation FastAPI (WebSocket binaire + REST)
+web/client/           Client Three.js (Vite + TypeScript), 4 cas d'usage
 ```
 
 ## Limitations

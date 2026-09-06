@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>SpearVM Simulation Lab — Three.js × noyaux SIMD AVX2</title>
+    <meta
+      name="description"
+      content="Quatre simulations Three.js temps reel calculees par les noyaux SIMD AVX2 de SpearVM : champ de flux neuronal, membrane non lineaire, entrainement live, banc d'essai des noyaux."
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M16 4l9 12-9 12-9-12z' fill='%2334e6b0'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo"></span>
+          <div>
+            <h1>SpearVM <span>Simulation Lab</span></h1>
+            <p id="brand-sub">Three.js × noyaux SIMD AVX2</p>
+          </div>
+        </div>
+        <div class="status" id="status">
+          <div class="pill" id="pill-backend"><b>backend</b><span>…</span></div>
+          <div class="pill" id="pill-link"><b>lien</b><span>connexion…</span></div>
+          <div class="pill" id="pill-compute"><b>calcul</b><span>—</span></div>
+          <div class="pill" id="pill-net"><b>flux</b><span>—</span></div>
+          <div class="pill" id="pill-fps"><b>gpu</b><span>—</span></div>
+        </div>
+      </header>
+
+      <nav class="tabs" id="tabs" aria-label="Cas d'usage"></nav>
+
+      <main class="stage">
+        <canvas id="viewport"></canvas>
+        <div class="overlay-tl">
+          <h2 id="scene-title"></h2>
+          <p id="scene-desc"></p>
+          <p class="kernels" id="scene-kernels"></p>
+        </div>
+        <div class="overlay-bl" id="scene-hint"></div>
+        <div class="loader" id="loader"><div class="spin"></div><span>initialisation…</span></div>
+      </main>
+
+      <aside class="panel" id="panel">
+        <div class="panel-section" id="gui-host"></div>
+        <div class="panel-section">
+          <h3>Telemetrie</h3>
+          <dl id="telemetry"></dl>
+        </div>
+        <div class="panel-section" id="extra-host"></div>
+      </aside>
+
+      <div id="toasts" class="toasts"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

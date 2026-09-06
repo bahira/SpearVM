@@ -1,0 +1,22 @@
+{
+  "name": "spearvm-simulation-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulations Three.js temps reel adossees aux noyaux SIMD SpearVM",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lil-gui": "^0.20.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0",
+    "typescript": "^5.6.3",
+    "vite": "^7.1.5"
+  }
+}

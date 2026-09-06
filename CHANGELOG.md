@@ -1,5 +1,19 @@
 # Changelog
 
+## non publie
+- **fix f32 `matmul_nt` : queue `k%8` ignoree** pour les blocs de 8 lignes —
+  resultats faux des que `k` n'etait pas multiple de 8 et `m >= 8`
+  (ex. k=33 : erreur absolue ~3). Queue scalaire ajoutee, valide de k=1 a 257.
+- **perf f32 `matmul_nt_gelu` : x2.3 a x2.7** — la ligne de B etait rechargee
+  8 fois par bloc ; blocage registres 8 lignes (1 chargement de B, 8 chaines
+  FMA) comme dans `matmul_nt_f32`. Sortie bit-a-bit identique.
+  (1024x768x1024 : 48.7 ms -> 18.0 ms)
+- **`web/` — SpearVM Simulation Lab** : 4 cas d'usage Three.js prets pour la
+  production adosses aux noyaux (champ de flux neuronal, membrane non lineaire,
+  entrainement live avec backprop, banc d'essai des noyaux). Serveur FastAPI +
+  WebSocket binaire (int16 quantifie), client Vite/TypeScript/Three.js,
+  repli numpy puis repli JavaScript, Dockerfile, 40 tests, workflow CI dedie.
+
 ## 0.5.1
 - `dependencies=["numpy"]` declaree (manquait depuis 0.1.0)
 - job CI `linux-wheel` : manylinux wheel + auditwheel + smoke test, artifact par run

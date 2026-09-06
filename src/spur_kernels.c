@@ -656,11 +656,21 @@ void spur_matmul_nt_f32(const float* A,const float* B,float* C,
                         v6=_mm256_fmadd_ps(av6,bv,v6);
                         v7=_mm256_fmadd_ps(av7,bv,v7);
                     }
+                    /* queue k%8 : sans elle les k non multiples de 8
+                       perdaient jusqu'a 7 produits par tuile (resultat faux) */
+                    float d0=0,d1=0,d2=0,d3=0,d4=0,d5=0,d6=0,d7=0;
+                    for(;q<ke;q++){
+                        const float b=br[q];
+                        d0+=ar[q]*b;       d1+=ar[k+q]*b;
+                        d2+=ar[2*k+q]*b;   d3+=ar[3*k+q]*b;
+                        d4+=ar[4*k+q]*b;   d5+=ar[5*k+q]*b;
+                        d6+=ar[6*k+q]*b;   d7+=ar[7*k+q]*b;
+                    }
                     /* reduction horizontale f32 */
-                    cr[j]     +=hsum8(v0); cr[n+j]    +=hsum8(v1);
-                    cr[2*n+j] +=hsum8(v2); cr[3*n+j]  +=hsum8(v3);
-                    cr[4*n+j] +=hsum8(v4); cr[5*n+j]  +=hsum8(v5);
-                    cr[6*n+j] +=hsum8(v6); cr[7*n+j]  +=hsum8(v7);
+                    cr[j]     +=hsum8(v0)+d0; cr[n+j]    +=hsum8(v1)+d1;
+                    cr[2*n+j] +=hsum8(v2)+d2; cr[3*n+j]  +=hsum8(v3)+d3;
+                    cr[4*n+j] +=hsum8(v4)+d4; cr[5*n+j]  +=hsum8(v5)+d5;
+                    cr[6*n+j] +=hsum8(v6)+d6; cr[7*n+j]  +=hsum8(v7)+d7;
                 }
             }
             #pragma omp parallel for schedule(static)
@@ -694,24 +704,34 @@ void spur_matmul_nt_gelu_f32(const float* A,const float* B,
             float* cr=C+(size_t)i0*8*n;
             for(long long j=jb;j<je;j++){
                 const float* br=B+(size_t)j*k;
-                __m256 acc=_mm256_setzero_ps();
+                /* blocage registres 8 lignes : la ligne de B est chargee UNE
+                   fois et alimente 8 chaines FMA independantes (avant : 8
+                   relectures completes de B -> ~x8 de trafic memoire). */
+                __m256 v0=_mm256_setzero_ps(),v1=_mm256_setzero_ps();
+                __m256 v2=_mm256_setzero_ps(),v3=_mm256_setzero_ps();
+                __m256 v4=_mm256_setzero_ps(),v5=_mm256_setzero_ps();
+                __m256 v6=_mm256_setzero_ps(),v7=_mm256_setzero_ps();
                 long long q=0;
-                for(;q+7<k;q+=8)
-                    acc=_mm256_fmadd_ps(_mm256_loadu_ps(ar+q),
-                                        _mm256_loadu_ps(br+q),acc);
-                float s=hsum8(acc);
-                for(;q<k;q++) s+=ar[q]*br[q];
-                cr[j]=gelu_f32_scalar(s+(bias?bias[j]:0.0f));
-                /* lignes 1..7 du bloc : memes offsets que spur_matmul_nt_f32 */
-                for(long long r2=1;r2<8;r2++){
-                    __m256 vr=_mm256_setzero_ps();
+                for(;q+7<k;q+=8){
+                    __m256 bv=_mm256_loadu_ps(br+q);
+                    v0=_mm256_fmadd_ps(_mm256_loadu_ps(ar+q),bv,v0);
+                    v1=_mm256_fmadd_ps(_mm256_loadu_ps(ar+k+q),bv,v1);
+                    v2=_mm256_fmadd_ps(_mm256_loadu_ps(ar+2*k+q),bv,v2);
+                    v3=_mm256_fmadd_ps(_mm256_loadu_ps(ar+3*k+q),bv,v3);
+                    v4=_mm256_fmadd_ps(_mm256_loadu_ps(ar+4*k+q),bv,v4);
+                    v5=_mm256_fmadd_ps(_mm256_loadu_ps(ar+5*k+q),bv,v5);
+                    v6=_mm256_fmadd_ps(_mm256_loadu_ps(ar+6*k+q),bv,v6);
+                    v7=_mm256_fmadd_ps(_mm256_loadu_ps(ar+7*k+q),bv,v7);
+                }
+                float s[8];
+                s[0]=hsum8(v0); s[1]=hsum8(v1); s[2]=hsum8(v2); s[3]=hsum8(v3);
+                s[4]=hsum8(v4); s[5]=hsum8(v5); s[6]=hsum8(v6); s[7]=hsum8(v7);
+                const float bj=bias?bias[j]:0.0f;
+                for(long long r2=0;r2<8;r2++){
                     const float* arr=ar+(size_t)r2*k;
-                    for(q=0;q+7<k;q+=8)
-                        vr=_mm256_fmadd_ps(_mm256_loadu_ps(arr+q),
-                                           _mm256_loadu_ps(br+q),vr);
-                    float sr=hsum8(vr);
-                    for(;q<k;q++) sr+=arr[q]*br[q];
-                    cr[(size_t)r2*n+j]=gelu_f32_scalar(sr+(bias?bias[j]:0.0f));
+                    float sr=s[r2];
+                    for(long long t=q;t<k;t++) sr+=arr[t]*br[t];  /* queue k%8 */
+                    cr[(size_t)r2*n+j]=gelu_f32_scalar(sr+bj);
                 }
             }
         }

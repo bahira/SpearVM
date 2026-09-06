@@ -1,0 +1,5 @@
+node_modules
+client/dist
+client/node_modules
+server/tests
+**/__pycache__
