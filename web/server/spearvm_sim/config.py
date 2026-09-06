@@ -27,7 +27,8 @@ def _float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Settings:
-    host: str = os.environ.get("SPEARVM_HOST", "0.0.0.0")
+    # 0.0.0.0 is intentional for containers; bind to 127.0.0.1 when local.
+    host: str = os.environ.get("SPEARVM_HOST", "0.0.0.0")  # nosec B104
     port: int = _int("SPEARVM_PORT", 8000)
     log_level: str = os.environ.get("SPEARVM_LOG_LEVEL", "info")
 
@@ -35,6 +36,13 @@ class Settings:
     max_rate: float = _float("SPEARVM_MAX_RATE", 60.0)
     min_rate: float = _float("SPEARVM_MIN_RATE", 1.0)
     idle_timeout_s: float = _float("SPEARVM_IDLE_TIMEOUT", 900.0)
+    auth_required: bool = os.environ.get("SPEARVM_AUTH_REQUIRED", "0").lower() in {"1", "true", "yes"}
+    api_keys: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            entry.strip() for entry in os.environ.get("SPEARVM_API_KEYS", "").split(",") if entry.strip()
+        )
+    )
+    max_clients_per_tenant: int = _int("SPEARVM_MAX_CLIENTS_PER_TENANT", 4)
 
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(

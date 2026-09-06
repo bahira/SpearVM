@@ -70,37 +70,70 @@ jobs:
               -o bin/spur.so src/spur_posix.c -lm
           PYTHONPATH=. python -m pytest tests/test_map.py tests/test_jit_pkg.py -v
 
-  linux-wheel:
-    runs-on: ubuntu-latest
+  windows-wheel:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Build and validate Windows wheel
+        shell: bash
+        run: |
+          python -m pip install build wheel numpy
+          python build_package.py
+          python -m wheel tags --platform-tag win_amd64 dist/spur_math-*py3-none-any.whl
+          python -m pip install --force-reinstall --no-deps numpy dist/spur_math-*win_amd64.whl
+          python -c "import spur_math, numpy as np; print('windows gelu ok:', spur_math.gelu(np.array([1.0])))"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-wheel
+          path: dist/*win_amd64.whl
+
+  linux-wheel:
+    # Build on a manylinux image so auditwheel can produce a portable tag.
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Build deps
-        run: pip install build wheel auditwheel
-
-      - name: Compile + package (build_package gere le .so linux)
         run: |
-          gcc -O3 -mavx2 -mfma -fopenmp -shared \
-              -o spur_math/libspur_kernels.so src/spur_kernels.c
-          python -m build --wheel --no-isolation
+          /opt/python/cp311-cp311/bin/python -m pip install build wheel auditwheel
 
-      - name: Tag linux puis vendore libgomp (auditwheel)
+      - name: Compile + package
         run: |
-          python -m wheel tags --platform-tag linux_x86_64 \
+          gcc -O3 -mavx2 -mfma -fopenmp -fPIC -shared \
+              -o spur_math/libspur_kernels.so src/spur_kernels.c -lm
+          /opt/python/cp311-cp311/bin/python -m build --wheel --no-isolation
+
+      - name: Tag and repair Linux wheel
+        run: |
+          mkdir -p wheelhouse
+          /opt/python/cp311-cp311/bin/python -m wheel tags --platform-tag linux_x86_64 \
               dist/spur_math-*py3-none-any.whl
-          auditwheel repair dist/spur_math-*linux_x86_64.whl --wheel-dir wheelhouse
-          auditwheel show wheelhouse/*.whl
+          /opt/python/cp311-cp311/bin/auditwheel repair \
+              dist/spur_math-*linux_x86_64.whl --wheel-dir wheelhouse
+          /opt/python/cp311-cp311/bin/auditwheel show wheelhouse/*.whl
 
-      - name: Smoke test du manylinux wheel
+      - name: Smoke test repaired wheel
         run: |
-          pip install --force-reinstall numpy wheelhouse/*.whl
-          python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
+          /opt/python/cp311-cp311/bin/python -m pip install --force-reinstall numpy wheelhouse/*.whl
+          /opt/python/cp311-cp311/bin/python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
 
       - uses: actions/upload-artifact@v6
         with:
           name: manylinux-wheel
           path: wheelhouse/*.whl
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Static security audit
+        run: |
+          pip install bandit
+          bandit -r web/server/spearvm_sim -ll

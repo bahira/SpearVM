@@ -7,6 +7,7 @@ import json
 from fastapi.testclient import TestClient
 
 from spearvm_sim.app import app
+from spearvm_sim.auth import Authenticator
 from spearvm_sim.protocol import decode_frame
 
 client = TestClient(app)
@@ -23,6 +24,14 @@ def test_catalogue():
     payload = client.get("/api/simulations").json()
     ids = {s["id"] for s in payload["simulations"]}
     assert {"flowfield", "wavefield", "trainer"} <= ids
+
+
+def test_http_auth_is_opt_in_and_fails_closed(monkeypatch):
+    monkeypatch.setattr("spearvm_sim.app._auth", Authenticator(True, ("acme:secret",)))
+    assert client.get("/api/simulations").status_code == 401
+    assert client.get("/api/simulations", headers={"X-API-Key": "wrong"}).status_code == 401
+    response = client.get("/api/simulations", headers={"Authorization": "Bearer secret"})
+    assert response.status_code == 200
 
 
 def test_bench_rapide():

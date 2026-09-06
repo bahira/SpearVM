@@ -54,5 +54,18 @@ SPEARVM_FORCE_FALLBACK=0
 ```
 
 For a commercial deployment, place the service behind TLS termination and an
-identity-aware reverse proxy. The project does not itself implement user
-accounts, billing, license-key enforcement, or tenant isolation.
+identity-aware reverse proxy. The service includes opt-in API-key
+authentication and per-tenant connection quotas, but does not implement user
+accounts, billing, license-key enforcement, or external tenant provisioning.
+Configure it with:
+
+```text
+SPEARVM_AUTH_REQUIRED=1
+SPEARVM_API_KEYS=tenant-a:replace-with-a-long-random-key,tenant-b:another-key
+SPEARVM_MAX_CLIENTS_PER_TENANT=4
+```
+
+API keys must be injected through a secret manager in production, never
+committed to the repository or placed in frontend code. WebSocket clients send
+`X-API-Key` or `Authorization: Bearer <key>` during the handshake; HTTP API
+clients use the same headers.

@@ -98,7 +98,13 @@ simulation Python suffit, aucun code client a toucher.
 | Methode | Route | Role |
 |---|---|---|
 | GET | `/api/health` | etat, backend de noyaux, clients connectes |
+| GET | `/api/ready` | readiness probe pour conteneur/load balancer |
 | GET | `/api/simulations` | catalogue + schema des parametres |
+
+Quand `SPEARVM_AUTH_REQUIRED=1`, les routes REST hors health/readiness exigent
+`X-API-Key` ou `Authorization: Bearer ...`. Les WebSocket exigent le meme
+secret pendant le handshake. Les clés sont associees a un tenant et chaque
+tenant possède sa propre limite de connexions (`SPEARVM_MAX_CLIENTS_PER_TENANT`).
 | GET | `/api/bench?quick=true` | banc d'essai (cache 30 s) |
 | GET | `/api/gradcheck` | verification differences finies de `gelu_backward` |
 | WS  | `/ws/sim/{id}` | flux de frames binaires |

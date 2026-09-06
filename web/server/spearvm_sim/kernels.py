@@ -90,8 +90,8 @@ def _load_spur_math():
         import spur_math  # type: ignore
 
         return spur_math
-    except Exception:  # noqa: BLE001 - on veut vraiment tout attraper
-        pass
+    except Exception:  # noqa: BLE001 - optional native backend
+        log.debug("installed spur_math is unavailable", exc_info=True)
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     _ensure_native_lib()

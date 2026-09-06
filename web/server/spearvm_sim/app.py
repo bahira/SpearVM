@@ -15,12 +15,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import bench as bench_mod
+from .auth import Authenticator, Principal
 from .config import settings
 from .kernels import get_kernels
 from .sims import REGISTRY, create, describe_all
@@ -29,8 +30,26 @@ log = logging.getLogger("spearvm.app")
 
 START_TIME = time.time()
 _clients = {"count": 0}
+_tenant_clients: dict[str, int] = {}
 _bench_cache: dict[str, Any] = {"report": None, "at": 0.0}
 BENCH_TTL_S = 30.0
+_auth = Authenticator(settings.auth_required, settings.api_keys)
+
+
+def _api_key_from_request(request: Request) -> str | None:
+    value = request.headers.get("x-api-key")
+    if value:
+        return value
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return token if scheme.lower() == "bearer" and token else None
+
+
+def require_http_auth(request: Request) -> Principal:
+    try:
+        return _auth.require(_api_key_from_request(request))
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail="authentication required") from exc
 
 
 @asynccontextmanager
@@ -56,6 +75,17 @@ app = FastAPI(
     description="Simulations Three.js temps reel adossees aux noyaux SIMD SpearVM.",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Cache-Control", "no-store" if request.url.path.startswith("/api/") else "public, max-age=3600")
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,7 +127,7 @@ def ready() -> JSONResponse:
 
 
 @app.get("/api/simulations")
-def simulations() -> dict[str, Any]:
+def simulations(_: Principal = Depends(require_http_auth)) -> dict[str, Any]:
     k = get_kernels()
     return {"backend": k.capabilities(), "simulations": describe_all()}
 
@@ -106,6 +136,7 @@ def simulations() -> dict[str, Any]:
 async def get_bench(
     quick: bool = Query(default=False, description="Version courte (~200 ms)"),
     refresh: bool = Query(default=False, description="Ignore le cache"),
+    _: Principal = Depends(require_http_auth),
 ) -> JSONResponse:
     now = time.time()
     cached = _bench_cache["report"]
@@ -118,7 +149,7 @@ async def get_bench(
 
 
 @app.get("/api/gradcheck")
-async def gradcheck() -> dict[str, Any]:
+async def gradcheck(_: Principal = Depends(require_http_auth)) -> dict[str, Any]:
     return await asyncio.to_thread(bench_mod.gradcheck_report)
 
 
@@ -148,12 +179,23 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
     if sim_id not in REGISTRY:
         await websocket.close(code=4404, reason=f"simulation inconnue: {sim_id}")
         return
+
+    api_key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key")
+    principal = _auth.authenticate(api_key)
+    if principal is None:
+        await websocket.close(code=4401, reason="authentication required")
+        return
+    tenant_id = principal.tenant_id
     if _clients["count"] >= settings.max_clients:
         await websocket.close(code=4429, reason="trop de clients simultanes")
+        return
+    if _tenant_clients.get(tenant_id, 0) >= settings.max_clients_per_tenant:
+        await websocket.close(code=4429, reason="limite client du tenant atteinte")
         return
 
     await websocket.accept()
     _clients["count"] += 1
+    _tenant_clients[tenant_id] = _tenant_clients.get(tenant_id, 0) + 1
     params = _parse_params(websocket.query_params.get("params"))
     sim = create(sim_id, params)
     rate = _clamp_rate(websocket.query_params.get("rate"), sim.default_rate)
@@ -246,6 +288,9 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
     finally:
         stop.set()
         _clients["count"] = max(0, _clients["count"] - 1)
+        _tenant_clients[tenant_id] = max(0, _tenant_clients.get(tenant_id, 1) - 1)
+        if _tenant_clients[tenant_id] == 0:
+            del _tenant_clients[tenant_id]
         # le client peut avoir disparu : la fermeture est best-effort
         with contextlib.suppress(Exception):
             await websocket.close()
