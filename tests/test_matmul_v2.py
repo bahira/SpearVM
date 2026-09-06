@@ -183,3 +183,22 @@ def test_out_rejette_les_tampons_invalides():
         sm.matmul_nt(x, y, out=np.zeros((8, 6), dtype=np.float32))  # mauvais dtype
     with pytest.raises(ValueError):
         sm.matmul_nt(x, y, out=np.zeros((6, 8)).T)          # non C-contigu
+
+
+# --- retropropagation du petit transformeur d'evaluation ---------------------
+def test_tiny_lm_gradcheck():
+    """La retropropagation ecrite a la main doit tenir face aux differences finies.
+
+    Le modele sert a mesurer la fidelite de l'attention creuse sur des poids
+    APPRIS (docs/ATTENTION_AUDIT.md §9) : si ses gradients sont faux, la mesure
+    ne vaut rien. Verification en float64 — en float32 le bruit d'arrondi de la
+    perte est du meme ordre que la difference finie recherchee.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments" / "attention"))
+    from tiny_lm import gradcheck
+
+    worst, loss = gradcheck()
+    assert np.isfinite(loss)
+    assert worst < 2e-3, f"ecart relatif max {worst:.2e} entre gradient et differences finies"

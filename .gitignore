@@ -26,3 +26,6 @@ venv/
 
 # --- autotuner (experiments/) : .so generes, on garde les CSV/JSON de mesure ---
 experiments/build/
+
+# modeles entraines (reproductibles par experiments/attention/tiny_lm.py)
+experiments/results/*.pkl

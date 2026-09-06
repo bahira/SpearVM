@@ -351,6 +351,92 @@ tous les blocs ont la même moyenne et aucune sélection ne bat le hasard. Les
 données de test ont donc été refaites avec des zones thématiques contiguës —
 sans quoi le banc mesurait l'impossible.
 
+## 9. La mesure manquante : fidélité sur un modèle **entraîné**
+
+Le §8 se terminait sur une réserve explicite : la fidélité mesurée sur poids
+aléatoires n'est pas transportable, parce que les têtes d'un groupe GQA y sont
+indépendantes. Réserve levée — non pas en téléchargeant un modèle, mais en en
+**entraînant un** dans le dépôt, avec les noyaux du dépôt.
+
+### Le modèle
+
+`experiments/attention/tiny_lm.py` : transformeur causal caractère par
+caractère, 2 couches, d_model 128, **4 têtes Q / 2 têtes KV (GQA)**, FFN 384,
+contexte 128, embeddings de sortie liés, RMSNorm. Corpus : les sources et la
+documentation de ce dépôt (707 094 caractères, 162 symboles). Rétropropagation
+écrite à la main — aucun framework n'est disponible ici — et **vérifiée par
+différences finies** (écart relatif 5e-05, `tests/test_matmul_v2.py`). Les
+produits matriciels passent par `spur_math.matmul_nt` / `matmul_backward` : le
+modèle est entraîné par les noyaux que l'on cherche à évaluer.
+
+2 200 pas, 478 ms/pas, ~18 min sur 2 vCPU. Perte de validation **1.657** contre
+**5.088** pour le hasard : le modèle a appris une vraie structure.
+
+> Piège rencontré : le premier gradcheck échouait avec un écart de 1.45 sur
+> **tous** les paramètres. Cause : le modèle était en float32, où le bruit
+> d'arrondi de la perte (~1e-7 relatif) est du même ordre que la différence
+> finie recherchée. En float64 l'écart tombe à 5e-05. Un gradcheck qui échoue
+> partout au même ordre accuse le protocole, pas le code.
+
+### Ce que l'entraînement change
+
+| grandeur | poids aléatoires (§8) | poids **appris** |
+| --- | --- | --- |
+| entropie de l'attention | 0.999 (uniforme) | **0.440** |
+| masse dans le quart le mieux noté | — | **0.951** |
+| masse dans le quart des blocs de 4 | — | 0.708 |
+| **accord des tops entre têtes d'un groupe GQA** | 8–10 % | **64.7 %** |
+
+L'hypothèse du §8 est confirmée par la mesure : l'entraînement concentre
+l'attention *et* aligne les têtes d'un même groupe. Le facteur qui rendait la
+sélection partagée inopérante sur données synthétiques disparaît largement sur
+des poids appris.
+
+### Le coût réel, en perplexité
+
+L'attention dense du modèle est remplacée par le noyau creux, et l'on mesure la
+perte sur du texte de validation :
+
+| budget | % du contexte | perplexité | surcoût |
+| --- | --- | --- | --- |
+| dense | 100 % | 4.745 | — |
+| 64 | 50 % | 4.746 | **0.0 %** |
+| 32 | 25 % | 4.765 | **0.4 %** |
+| 16 | 12 % | 4.887 | 3.0 % |
+| 8 | 6 % | 5.067 | 6.8 % |
+
+### Le routage gagne-t-il face aux solutions triviales ?
+
+C'est la question qui décide si l'index mérite d'exister. À budget identique :
+
+| budget | index hiérarchique | fenêtre récente | tirage au hasard |
+| --- | --- | --- | --- |
+| 32 (25 %) | **+0.4 %** | +11.6 % | +17.2 % |
+| 16 (12 %) | **+3.0 %** | +19.0 % | +21.7 % |
+| 8 (6 %) | **+6.8 %** | +28.6 % | +28.6 % |
+
+À 25 % du contexte, le routage par contenu coûte **29 fois moins** de perplexité
+que garder simplement les tokens les plus récents. L'index n'est pas un
+raffinement : c'est lui qui fait tenir l'approximation.
+
+### Ce que cette mesure ne dit pas
+
+Elle est honnête sur son domaine de validité, et il est étroit :
+
+* modèle **minuscule** (2 couches, 128 dimensions) et contexte **court** (128) :
+  un budget de « 25 % » vaut ici 32 tokens, pas 16 384 ;
+* corpus de code et de documentation, très structuré et répétitif — les zones
+  thématiques contiguës y sont plus marquées que dans du texte général ;
+* une seule graine, un seul jeu d'hyperparamètres ;
+* la mesure de coût (§8, ×57 à 65 k) et la mesure de qualité (ici, contexte 128)
+  ont été faites à des échelles différentes : **elles ne se multiplient pas**.
+
+Ce qu'elle établit en revanche solidement : *sur des poids appris*, l'attention
+se concentre, les têtes d'un groupe GQA s'accordent, et un routage par contenu
+à 25 % du contexte coûte moins de 1 % de perplexité là où les heuristiques
+triviales en coûtent plus de 10 %. Le mécanisme identifié comme bloquant au §8
+n'est pas un obstacle de fond — c'était un artefact des données synthétiques.
+
 ---
 
 *Toutes les valeurs de ce rapport proviennent de `experiments/attention/audit.py`

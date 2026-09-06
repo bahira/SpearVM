@@ -1,6 +1,20 @@
 # Changelog
 
 ## non publie
+- **fidelite de l'attention creuse mesuree sur un modele ENTRAINE** — la reserve
+  laissee ouverte par l'audit est levee : `experiments/attention/tiny_lm.py`
+  entraine un transformeur GQA (2 couches, 4 tetes Q / 2 KV, contexte 128) sur
+  les sources du depot, avec les noyaux du depot, retropropagation ecrite a la
+  main et **verifiee par differences finies** (5e-05). Perte de validation 1.657
+  contre 5.088 au hasard.
+  Resultats : l'entrainement fait passer l'entropie de l'attention de 0.999 a
+  **0.440** et l'accord entre tetes d'un meme groupe GQA de 8 % a **64.7 %** —
+  le facteur qui bloquait sur donnees synthetiques disparait. Cout en
+  perplexite du noyau creux : **+0.4 % a 25 % du contexte**, contre **+11.6 %**
+  pour une fenetre recente et **+17.2 %** pour un tirage au hasard.
+  Domaine de validite explicite dans docs/ATTENTION_AUDIT.md section 9 : modele
+  minuscule, contexte court, corpus tres structure — la mesure de cout (x57 a
+  65 k) et celle de qualite (contexte 128) ne se multiplient pas.
 - **attention creuse en C** : l'index hierarchique de l'audit devient un noyau
   (`spur_kv_index_build_f32`, `spur_attention_sparse_f32`, `KVCache.build_index`
   / `.attend_sparse`). **x12.8 a 16 k de contexte, x57 a 65 k**, index = 9.5 %
