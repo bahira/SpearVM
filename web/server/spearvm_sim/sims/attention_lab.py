@@ -140,6 +140,9 @@ class AttentionLabSim(Simulation):
         temp = float(self.params["temperature"])
 
         with self.timer():
+            # Le debit annonce doit mesurer le DECODAGE, pas la visualisation :
+            # la carte d'attention est calculee ensuite, hors de ce chronometre.
+            t_block = time.perf_counter()
             h = _rmsnorm(self.x, self.n1)
             q = self._mm("wq", h).reshape(1, self.h_q, self.dh)
             # Une requete aleatoire donnerait une attention uniforme (entropie 1) :
@@ -164,7 +167,10 @@ class AttentionLabSim(Simulation):
             self.x = np.ascontiguousarray(
                 self.x / (np.abs(self.x).max() + 1e-6), dtype=np.float32)
 
+            block_ms = (time.perf_counter() - t_block) * 1e3
+
             # carte d'attention : les memes noyaux, mais on garde les poids
+            # (cout de visualisation, exclu du debit annonce)
             rep = self.h_q // self.h_kv
             scores = np.empty((self.h_q, self.tk), dtype=np.float32)
             for hd in range(self.h_q):
@@ -174,9 +180,9 @@ class AttentionLabSim(Simulation):
             weights = sm.softmax(scores * np.float32(1.0 / np.sqrt(self.dh)))
 
         self.tokens += 1
-        rate = 1.0 / max(self._compute_ms / 1e3, 1e-9)
+        rate = 1.0 / max(block_ms / 1e3, 1e-9)
         self._rate_ema = rate if self._rate_ema == 0 else 0.85 * self._rate_ema + 0.15 * rate
-        gflops = (self._flops / 1e9) / max(self._compute_ms / 1e3, 1e-9)
+        gflops = (self._flops / 1e9) / max(block_ms / 1e3, 1e-9)
         top = float(weights.max())
         # entropie normalisee : 0 = une seule position, 1 = attention uniforme
         w64 = weights.astype(np.float64) + 1e-12
@@ -196,6 +202,8 @@ class AttentionLabSim(Simulation):
                 "kv_Mo": round(self.cache.nbytes / 1e6, 2),
                 "tokens": self.tokens,
                 "tokens_par_s": round(self._rate_ema, 1),
+                "decode_ms": round(block_ms, 3),
+                "carte_ms": round(max(self._compute_ms - block_ms, 0.0), 3),
                 "gflops": round(gflops, 1),
                 "mflop_par_token": round(self._flops / 1e6, 1),
                 "attention_max": round(top, 4),

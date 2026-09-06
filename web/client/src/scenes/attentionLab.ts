@@ -178,7 +178,8 @@ export class AttentionLabScene implements SimScene {
     const fmt = statString(header.stats, 'format', 'f32');
     this.stats = {
       format: fmt,
-      'tokens/s': statNumber(header.stats, 'tokens_par_s').toFixed(0),
+      'tokens/s (decodage)': statNumber(header.stats, 'tokens_par_s').toFixed(0),
+      'dont carte (viz)': `${statNumber(header.stats, 'carte_ms').toFixed(2)} ms`,
       GFLOPS: statNumber(header.stats, 'gflops').toFixed(1),
       'poids en memoire': `${statNumber(header.stats, 'poids_Mo').toFixed(2)} Mo`,
       'cache KV': `${statNumber(header.stats, 'kv_Mo').toFixed(2)} Mo`,
