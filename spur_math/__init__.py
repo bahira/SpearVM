@@ -308,6 +308,88 @@ _attention_mha_bf16.argtypes = [_PF_, _U16, _PF_, ctypes.c_longlong,
 _attention_mha_bf16.restype = None
 
 
+_I8 = ctypes.POINTER(ctypes.c_int8)
+_quant_i8 = _dll.spur_quant_i8_rows
+_quant_i8.argtypes = [_PF_, _I8, _PF_, ctypes.c_longlong, ctypes.c_longlong]
+_quant_i8.restype = None
+_quant_bf16 = _dll.spur_quant_bf16_rows
+_quant_bf16.argtypes = [_PF_, _U16, ctypes.c_longlong, ctypes.c_longlong]
+_quant_bf16.restype = None
+_gemm_i8 = _dll.spur_gemm_nt_i8b_f32
+_gemm_i8.argtypes = [_PF_, _I8, _PF_, _PF_, ctypes.c_longlong, ctypes.c_longlong,
+                     ctypes.c_longlong]
+_gemm_i8.restype = None
+_gemm_bf16w = _dll.spur_gemm_nt_bf16w_f32
+_gemm_bf16w.argtypes = [_PF_, _U16, _PF_, ctypes.c_longlong, ctypes.c_longlong,
+                        ctypes.c_longlong]
+_gemm_bf16w.restype = None
+
+
+class QuantizedWeight:
+    """Matrice de poids (n, k) stockee en bf16 ou int8, produit en NT.
+
+    A m petit (decodage), un GEMM ne fait que 2.m flops par poids lu : le temps
+    est decide par le nombre d'octets par poids, pas par le calcul. Reduire le
+    format est donc le seul levier reel.
+
+        w8 = sm.QuantizedWeight(w, dtype="i8")   # 4 octets -> 1
+        y = w8.matmul(x)                         # y = x . w^T
+
+    int8 : quantification symetrique **par ligne de sortie** (une echelle par
+    neurone, ce qui suit sa dynamique propre). bf16 : troncature exacte du
+    float32, sans echelle.
+    """
+
+    __slots__ = ("n", "k", "dtype", "_q", "_scales")
+
+    def __init__(self, w, dtype="i8"):
+        w = np.ascontiguousarray(w, dtype=np.float32)
+        if w.ndim != 2:
+            raise ValueError(f"poids attendus 2D (n, k), recus {w.shape}")
+        if dtype not in ("bf16", "i8"):
+            raise ValueError(f"dtype attendu 'bf16' ou 'i8', recu {dtype!r}")
+        self.n, self.k = w.shape
+        self.dtype = dtype
+        if dtype == "i8":
+            self._q = np.empty((self.n, self.k), dtype=np.int8)
+            self._scales = np.empty(self.n, dtype=np.float32)
+            _quant_i8(w.ctypes.data_as(_PF_), self._q.ctypes.data_as(_I8),
+                      self._scales.ctypes.data_as(_PF_), self.n, self.k)
+        else:
+            self._q = np.empty((self.n, self.k), dtype=np.uint16)
+            self._scales = None
+            _quant_bf16(w.ctypes.data_as(_PF_), self._q.ctypes.data_as(_U16),
+                        self.n, self.k)
+
+    @property
+    def nbytes(self):
+        return self._q.nbytes + (self._scales.nbytes if self._scales is not None else 0)
+
+    def dequantize(self):
+        """Reconstruit les poids float32 (pour mesurer l'erreur de quantification)."""
+        if self.dtype == "i8":
+            return self._q.astype(np.float32) * self._scales[:, None]
+        return (self._q.astype(np.uint32) << 16).view(np.float32)
+
+    def matmul(self, a, out=None):
+        """y = a . w^T. a:(m,k) float32 -> (m,n)."""
+        a = np.ascontiguousarray(a, dtype=np.float32)
+        if a.ndim != 2 or a.shape[1] != self.k:
+            raise ValueError(f"a attendu (m, {self.k}), recu {a.shape}")
+        m = a.shape[0]
+        y = np.empty((m, self.n), dtype=np.float32) if out is None else out
+        if y.shape != (m, self.n) or y.dtype != np.float32 or not y.flags["C_CONTIGUOUS"]:
+            raise ValueError("out doit etre (m,n) float32 C-contigu")
+        if self.dtype == "i8":
+            _gemm_i8(a.ctypes.data_as(_PF_), self._q.ctypes.data_as(_I8),
+                     self._scales.ctypes.data_as(_PF_), y.ctypes.data_as(_PF_),
+                     m, self.k, self.n)
+        else:
+            _gemm_bf16w(a.ctypes.data_as(_PF_), self._q.ctypes.data_as(_U16),
+                        y.ctypes.data_as(_PF_), m, self.k, self.n)
+        return y
+
+
 class KVCache:
     """Cache K/V packe une fois, reutilisable par des dizaines de tuiles.
 

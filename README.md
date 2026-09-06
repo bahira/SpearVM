@@ -115,7 +115,13 @@ sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V, une t�
 sm.attention_mha(q, k, v, lengths=None)     # multi-têtes / GQA, une descente C
 cache = sm.KVCache(k, v, dtype="bf16")      # packé une fois, réutilisé
 cache.attend(q, lengths=None)
+w8 = sm.QuantizedWeight(w, dtype="i8")      # poids ÷4 — pour le décodage
+w8.matmul(x)
 ```
+
+Bloc de décodeur complet (attention + FFN + résiduels), 2 vCPU : prefill
+**×2.8 à ×9.65** vs numpy (jusqu'à 17 506 tok/s) ; décodage **×2.4 à ×9.7** avec
+poids int8, jusqu'à **3 439 tok/s** en mono-flux.
 
 | Noyau | Précision | Gain vs numpy |
 |---|---|---|
@@ -126,6 +132,7 @@ cache.attend(q, lengths=None)
 | `attention_mha` (multi-têtes, GQA) | idem | **×15.6 médian**, ×2.7 vs boucle par tête |
 | `KVCache` (packé, réutilisé) | idem | ×4.4 de plus — 68.8 GFLOPS à tq=4 |
 | `KVCache(dtype="bf16")` | 2e-03 relatif | empreinte ÷2 ; plus rapide au-delà de 17 Mo |
+| `QuantizedWeight(dtype="i8")` | 1e-02 sur le bloc | **×5.3 – ×5.9 en GEMV**, poids ÷4 |
 
 Le masque causal est porté par un vecteur de **longueurs** : rien à
 matérialiser, et le noyau ne parcourt que les entrées valides. Le schéma

@@ -268,3 +268,54 @@ def test_kv_cache_dtype_invalide():
     k = np.zeros((8, 2, 4), dtype=np.float32)
     with pytest.raises(ValueError):
         sm.KVCache(k, k, dtype="int8")
+
+
+# --- poids quantifies --------------------------------------------------------
+@pytest.mark.parametrize("dtype,tol,ratio", [("bf16", 4e-3, 2), ("i8", 2e-2, 4)])
+def test_quantized_weight(dtype, tol, ratio):
+    rng = np.random.default_rng(11)
+    n, k = 256, 192
+    w = (rng.standard_normal((n, k)) / np.sqrt(k)).astype(np.float32)
+    q = sm.QuantizedWeight(w, dtype=dtype)
+    assert q.nbytes * ratio <= w.nbytes * 1.05, "empreinte non reduite comme attendu"
+    for m in (1, 2, 5, 33):
+        a = (rng.standard_normal((m, k)) / np.sqrt(k)).astype(np.float32)
+        got = q.matmul(a)
+        ref = a.astype(np.float64) @ w.astype(np.float64).T
+        rel = np.abs(got - ref).max() / np.abs(ref).max()
+        assert rel <= tol, f"{dtype} m={m} : erreur {rel:.2e}"
+        assert np.isfinite(got).all()
+
+
+def test_quantized_weight_dequantize():
+    """La dequantification doit reproduire ce que le noyau utilise vraiment."""
+    rng = np.random.default_rng(12)
+    w = (rng.standard_normal((64, 48)) / 7).astype(np.float32)
+    for dtype, tol in (("bf16", 1e-6), ("i8", 5e-5)):
+        q = sm.QuantizedWeight(w, dtype=dtype)
+        a = (rng.standard_normal((3, 48)) / 7).astype(np.float32)
+        direct = q.matmul(a)
+        via = a.astype(np.float64) @ q.dequantize().astype(np.float64).T
+        assert np.abs(direct - via).max() / max(np.abs(via).max(), 1e-9) <= tol
+
+
+def test_quantized_weight_echelle_par_ligne():
+    """Une ligne de tres faible amplitude ne doit pas etre ecrasee par les autres."""
+    w = np.zeros((2, 32), dtype=np.float32)
+    w[0] = 1.0
+    w[1] = 1e-4
+    q = sm.QuantizedWeight(w, dtype="i8")
+    a = np.ones((1, 32), dtype=np.float32)
+    got = q.matmul(a)[0]
+    assert got[0] == pytest.approx(32.0, rel=1e-2)
+    assert got[1] == pytest.approx(32e-4, rel=1e-2), "echelle par ligne non appliquee"
+
+
+def test_quantized_weight_validation():
+    w = np.zeros((8, 4), dtype=np.float32)
+    with pytest.raises(ValueError):
+        sm.QuantizedWeight(w, dtype="f16")
+    with pytest.raises(ValueError):
+        sm.QuantizedWeight(np.zeros(8, dtype=np.float32))
+    with pytest.raises(ValueError):
+        sm.QuantizedWeight(w).matmul(np.zeros((2, 5), dtype=np.float32))

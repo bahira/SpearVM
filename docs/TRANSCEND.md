@@ -263,7 +263,64 @@ dominé par les GEMV du FFN (m = 1), purement limités par la bande passante —
 il n'y a rien à y gagner, et nous payons quelques appels de plus. Le gain
 n'apparaît qu'à partir de tk ≈ 2048.
 
-## 7. API et couverture
+## 7. Poids quantifiés : briser le mur de bande passante du décodage
+
+Le §6 laissait une ligne à ×0.89 : à contexte court, le bloc est dominé par les
+GEMV du FFN. Diagnostic mesuré : à m petit, un GEMM ne fait que **2·m flops par
+poids lu**. Le temps n'est donc pas décidé par le nombre d'opérations mais par
+le **nombre d'octets par poids**. Le seul levier est le format.
+
+| format | octets/poids | échelle |
+| --- | --- | --- |
+| f32 | 4 | — |
+| bf16 | 2 | aucune (le format porte l'exposant) |
+| int8 | 1 | une **par ligne de sortie** (par neurone) |
+
+Les activations restent en float32 : elles sont peu volumineuses et c'est sur
+elles que se joue la précision du produit.
+
+**GEMM à m petit** (`experiments/attention/bench_quant.py`) :
+
+| m | k | n | f32 | bf16 | int8 | ×bf16 | ×int8 | Go/s f32 | Go/s int8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 768 | 3072 | 0.631 ms | 0.214 | 0.120 | ×2.95 | **×5.26** | 15.0 | 19.7 |
+| 1 | 3072 | 768 | 0.613 ms | 0.173 | 0.104 | ×3.54 | **×5.87** | 15.4 | 22.6 |
+| 4 | 3072 | 768 | 0.793 ms | 0.468 | 0.271 | ×1.69 | ×2.92 | 11.9 | 8.7 |
+| 16 | 768 | 3072 | 1.499 ms | 1.042 | 1.607 | ×1.44 | **×0.93** | 6.3 | 1.5 |
+
+Les colonnes de débit démontrent le mécanisme : à m = 1 le chemin f32 lit à
+~15 Go/s — le plafond mémoire de la machine — et int8 lit **quatre fois moins
+d'octets**. À partir de m ≈ 16 le GEMM redevient limité par le calcul, le
+format cesse d'aider, et le noyau int8 (bloc 3×4 simple) perd contre les noyaux
+f32 optimisés. **La quantification des poids est un outil de décodage, pas de
+prefill** — c'est écrit dans la docstring de l'API.
+
+**Bloc de décodeur complet, un token contre un cache KV** :
+
+| tk | d_model | numpy | f32 | bf16 | int8 | ×numpy (int8) | poids |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 512 | 512 | 0.692 ms | 0.901 | 0.406 | **0.291** | **×2.38** | 2.6 Mo |
+| 2048 | 512 | 1.678 ms | 1.015 | 0.488 | **0.391** | ×4.30 | 2.6 Mo |
+| 512 | 768 | 1.209 ms | 2.150 | 0.769 | **0.496** | ×2.44 | 5.9 Mo |
+| 4096 | 768 | 6.390 ms | 2.426 | 1.192 | **0.826** | ×7.74 | 5.9 Mo |
+| 8192 | 768 | 13.262 ms | 3.238 | 1.790 | **1.370** | **×9.68** | 5.9 Mo |
+
+La ligne qui était à ×0.89 au §6 est maintenant à **×2.38**. Médiane ×2.94
+contre le chemin f32 de SpearVM lui-même, jusqu'à **3 439 tokens/s** en
+décodage mono-flux sur 2 vCPU, avec des poids quatre fois plus petits
+(23.6 Mo → 5.9 Mo).
+
+Coût : l'erreur relative en sortie de bloc passe de 1e-06 (f32) à **0.9–1.4 %**
+en int8, et ~0.2 % en bf16. C'est le prix d'une quantification par ligne sans
+étalonnage ; le publier est la moitié du résultat.
+
+```python
+w8 = sm.QuantizedWeight(w, dtype="i8")   # ou "bf16"
+y = w8.matmul(x)                         # y = x · wᵀ
+w8.dequantize()                          # ce que le noyau utilise vraiment
+```
+
+## 8. API et couverture
 
 ```python
 import spur_math as sm
@@ -273,17 +330,22 @@ sm.attention_tile(q, k, v, scale=None, lengths=None)      # une tete
 sm.attention_mha(q, k, v, scale=None, lengths=None)       # multi-tetes, GQA
 cache = sm.KVCache(k, v, dtype="f32")       # ou "bf16" : empreinte / 2
 cache.attend(q, lengths=None)
+w8 = sm.QuantizedWeight(w, dtype="i8")      # ou "bf16" : poids / 4 ou / 2
+w8.matmul(x)                                # pour le decodage (m petit)
 ```
 
-`tests/test_softmax.py` (24 tests) couvre : contrat en ulp sur `exp`, cas
+`tests/test_softmax.py` (29 tests) couvre : contrat en ulp sur `exp`, cas
 limites (`-1e4`, `-800`, saturations `±1e30`), lignes de longueur nulle,
 invariance par translation, sommes à 1, tuile d'attention contre référence
 float64, masque causal (la première requête ne voit qu'une clé : sa sortie doit
 être exactement `v[0]`), équivalence multi-têtes/tête-par-tête, égalité
-**bit-à-bit** du cache packé, et bornes du bf16. Suite complète du dépôt :
-**77 tests**.
+**bit-à-bit** du cache packé, bornes du bf16, et pour les poids quantifiés :
+empreinte réduite du bon facteur, cohérence avec la déquantification, et le fait
+qu'une ligne de très faible amplitude ne soit **pas écrasée** par les autres
+(vérification que l'échelle est bien par ligne). Suite complète du dépôt :
+**82 tests**.
 
-## 8. Ce qui n'a pas marché
+## 9. Ce qui n'a pas marché
 
 * **Le softmax « online »** : −20 % à −75 % contre les trois passes (§2).
   L'argument flash-attention est un argument de hiérarchie mémoire GPU.
@@ -294,6 +356,9 @@ float64, masque causal (la première requête ne voit qu'une clé : sa sortie do
   qui masque complètement le comportement du polynôme (§1).
 * **Attribuer un gain à bf16 sans vérifier que les deux chemins utilisent le
   même noyau** : la moitié du ×1.95 initial venait du choix de kernel (§7).
+* **Utiliser des poids quantifiés en prefill** : à m ≥ 16 le GEMM redevient
+  limité par le calcul et le noyau int8 perd (×0.93). Le format ne sert qu'à
+  m petit.
 * **Toucher à la règle d'aiguillage globale** pour capter les gains du régime
   m < 64 : aucune variante ne le fait sans régresser ailleurs, sur les 279
   formes f32 mesurées. La connaissance de forme est donc restée locale à

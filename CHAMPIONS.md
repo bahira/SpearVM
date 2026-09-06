@@ -9,6 +9,38 @@ sur grille dense indépendante ; `MSE` = erreur quadratique moyenne.
 
 ---
 
+## POIDS QUANTIFIES — bf16 et int8 par ligne (SpearVM)
+
+A m petit, un GEMM ne fait que 2.m flops par poids lu : le temps est decide par
+les octets, pas par les operations.
+
+| Format | Octets/poids | GEMV (m=1) | Erreur sur un bloc de decodeur |
+|---|---|---|---|
+| f32 | 4 | reference (~15 Go/s, plafond memoire) | 1e-6 |
+| **bf16** | 2 | **x2.5 – x3.5** | 0.2 % |
+| **int8** (echelle par ligne) | 1 | **x5.3 – x5.9** | 0.9 – 1.4 % |
+
+A m >= 16 le GEMM redevient limite par le calcul et int8 perd (x0.93) :
+outil de **decodage**, pas de prefill.
+
+**C** : `spur_quant_i8_rows`, `spur_gemm_nt_i8b_f32`, `spur_gemm_nt_bf16w_f32`.
+**Python** : `spur_math.QuantizedWeight(w, dtype="i8"|"bf16")`.
+
+---
+
+## CACHE KV — packe une fois, bf16 optionnel (SpearVM)
+
+| Metrique | Valeur mesuree |
+|---|---|
+| Packing amorti | **x4.40 median** (x2.35 a x4.71) |
+| Petites tuiles (tq=4) | 5.0 -> **68.8 GFLOPS** (x13.8) |
+| Decodage tq=1, tk=4096 | 34.5 GFLOPS, x8.3 vs numpy |
+| bf16 | empreinte /2 toujours ; vitesse x1.08-x1.41 au-dela de 17 Mo |
+
+**Python** : `spur_math.KVCache(k, v, dtype="f32"|"bf16")`, `.attend(q, lengths=)`.
+
+---
+
 ## EXP — minimax Remez + reduction d'argument (SpearVM)
 
 `exp(x)`, reference IEEE. Forme : `x = k·ln2 + r` (ln2 scinde hi/lo, `k·hi`

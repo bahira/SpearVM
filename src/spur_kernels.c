@@ -1899,3 +1899,96 @@ void spur_attention_mha_packed_bf16(const float* Q, const uint16_t* packed, floa
     SPUR_AFREE(lb);
     SPUR_AFREE(work);
 }
+
+/* ============================================================================
+   POIDS QUANTIFIES — briser le mur de bande passante du decodage
+   ----------------------------------------------------------------------------
+   A m petit (decodage token par token), un GEMM ne fait que 2.m flops par
+   poids lu : le calcul ne peut pas etre le facteur limitant. Mesure sur le
+   bloc de decodeur : a contexte court, le temps est entierement decide par la
+   lecture des matrices de poids (d_ff x d_model). La seule variable est donc
+   le nombre d'octets par poids.
+
+     f32  : 4 octets, reference
+     bf16 : 2 octets, troncature exacte du float32 (erreur ~4e-3 relative)
+     int8 : 1 octet, quantification symetrique **par ligne de sortie**
+            (une echelle par ligne de B, ce qui suit la dynamique de chaque
+            neurone au lieu d'une echelle globale)
+
+   Les activations restent en float32 : elles sont peu volumineuses et c'est
+   sur elles que se joue la precision du produit.
+   ========================================================================== */
+
+static inline __m256 spur_load8_i8(const int8_t* p){
+    return _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)p)));
+}
+
+/* Quantification symetrique par ligne : Bq[j] = round(B[j] / s_j), s_j tel que
+   max|B[j]| -> 127. Renvoie les echelles dans `scales`.                      */
+void spur_quant_i8_rows(const float* B, int8_t* Bq, float* scales,
+                        long long n, long long k){
+    #pragma omp parallel for schedule(static)
+    for (long long j = 0; j < n; j++){
+        const float* row = B + j * k;
+        float amax = 0.0f;
+        for (long long t = 0; t < k; t++){
+            const float a = fabsf(row[t]);
+            if (a > amax) amax = a;
+        }
+        const float s = (amax > 0.0f) ? (amax / 127.0f) : 1.0f;
+        const float inv = 1.0f / s;
+        scales[j] = s;
+        int8_t* dst = Bq + j * k;
+        for (long long t = 0; t < k; t++){
+            float v = row[t] * inv;
+            v = (v > 127.0f) ? 127.0f : ((v < -127.0f) ? -127.0f : v);
+            dst[t] = (int8_t)lrintf(v);
+        }
+    }
+}
+
+void spur_quant_bf16_rows(const float* B, uint16_t* Bq, long long n, long long k){
+    #pragma omp parallel for schedule(static)
+    for (long long j = 0; j < n * k; j++) Bq[j] = spur_f32_to_bf16(B[j]);
+}
+
+/* C = A . B^T avec A float32 (m,k) et B int8 (n,k) + une echelle par ligne. */
+void spur_gemm_nt_i8b_f32(const float* restrict A, const int8_t* restrict B,
+                          const float* restrict scales, float* restrict C,
+                          long long m, long long k, long long n){
+    const long long MR = 3, NR = 4;
+    #pragma omp parallel for schedule(static) if(n >= 64)
+    for (long long j0 = 0; j0 < n; j0 += NR){
+        const long long cols = (n - j0 < NR) ? (n - j0) : NR;
+        for (long long i0 = 0; i0 < m; i0 += MR){
+            const long long rows = (m - i0 < MR) ? (m - i0) : MR;
+            __m256 acc[3][4];
+            for (int a = 0; a < 3; a++)
+                for (int b = 0; b < 4; b++) acc[a][b] = _mm256_setzero_ps();
+            long long q = 0;
+            for (; q + 7 < k; q += 8){
+                __m256 av[3];
+                for (long long r = 0; r < rows; r++)
+                    av[r] = _mm256_loadu_ps(A + (i0 + r) * k + q);
+                for (long long c = 0; c < cols; c++){
+                    const __m256 bv = spur_load8_i8(B + (j0 + c) * k + q);
+                    for (long long r = 0; r < rows; r++)
+                        acc[r][c] = _mm256_fmadd_ps(av[r], bv, acc[r][c]);
+                }
+            }
+            for (long long r = 0; r < rows; r++)
+                for (long long c = 0; c < cols; c++){
+                    float s = hsum8(acc[r][c]);
+                    for (long long t = q; t < k; t++)
+                        s += A[(i0 + r) * k + t] * (float)B[(j0 + c) * k + t];
+                    C[(i0 + r) * n + j0 + c] = s * scales[j0 + c];
+                }
+        }
+    }
+}
+
+/* Meme chose avec des poids bf16 (pas d'echelle : le format porte l'exposant). */
+void spur_gemm_nt_bf16w_f32(const float* A, const uint16_t* B, float* C,
+                            long long m, long long k, long long n){
+    spur_gemm_nt_bf16b_f32(A, B, C, m, k, n);
+}

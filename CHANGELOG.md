@@ -1,6 +1,15 @@
 # Changelog
 
 ## non publie
+- **poids quantifies bf16 / int8** (`spur_math.QuantizedWeight`) — a m petit un
+  GEMM ne fait que 2.m flops par poids lu : le temps est decide par le nombre
+  d'octets, pas d'operations. int8 (echelle **par ligne de sortie**) donne
+  **x5.26 a x5.87 en GEMV**, et le bloc de decodeur passe de x0.89 a **x2.38**
+  a contexte court, jusqu'a **x9.68** a 8 k de contexte — **3 439 tokens/s** en
+  mono-flux sur 2 vCPU, poids divises par quatre (23.6 -> 5.9 Mo).
+  Cout : erreur en sortie de bloc 0.9 a 1.4 % (0.2 % en bf16).
+  A m >= 16 le GEMM redevient limite par le calcul et int8 perd (x0.93) : c'est
+  un outil de decodage, pas de prefill, et c'est ecrit dans l'API.
 - **bloc de decodeur complet** (`experiments/attention/bench_block.py`) :
   attention + FFN + residuels assembles avec les noyaux du depot.
   Prefill **x2.8 a x9.65** vs numpy (6 250 a 17 506 tokens/s), decodage
