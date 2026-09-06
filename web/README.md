@@ -142,6 +142,11 @@ tenant possède sa propre limite de connexions (`SPEARVM_MAX_CLIENTS_PER_TENANT`
 | `REDIS_URL` | — | Redis pour le rate limiting distribué |
 | `SPEARVM_RATE_LIMIT_PER_MINUTE` | `120` | quota par tenant |
 
+L'observabilité Prometheus est disponible sur `/metrics`. Les métriques
+incluent les requêtes HTTP, la latence, les clients WebSocket et les messages
+par tenant. Les endpoints `/api/admin/keys` permettent à un admin de lister,
+créer et révoquer des clés ; ils ne renvoient jamais les hashes.
+
 ## Note de mesure (trouvee en instrumentant ce lab)
 
 Le serveur alterne appels **BLAS** (numpy) et regions **OpenMP** (noyaux

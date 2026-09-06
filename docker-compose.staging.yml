@@ -58,6 +58,24 @@ services:
       timeout: 5s
       retries: 12
 
+  edge:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
+  caddy_data:
+  caddy_config:

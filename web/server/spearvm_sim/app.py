@@ -11,19 +11,21 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import bench as bench_mod
 from .auth import AuthService, MemoryRateLimiter, Principal, RedisRateLimiter, build_auth_service
 from .config import settings
 from .kernels import get_kernels
+from .metrics import ACTIVE_CLIENTS, LATENCY, REQUESTS, WS_MESSAGES, render as render_metrics
 from .sims import REGISTRY, create, describe_all
 
 log = logging.getLogger("spearvm.app")
@@ -65,6 +67,12 @@ def require_http_auth(request: Request) -> Principal:
         raise HTTPException(status_code=401, detail="authentication required") from exc
 
 
+def require_admin(principal: Principal = Depends(require_http_auth)) -> Principal:
+    if principal.role != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return principal
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(
@@ -92,7 +100,11 @@ app = FastAPI(
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    started = time.perf_counter()
     response = await call_next(request)
+    path = request.url.path
+    REQUESTS.labels(request.method, path, str(response.status_code)).inc()
+    LATENCY.labels(path).observe(time.perf_counter() - started)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -139,6 +151,11 @@ def ready() -> JSONResponse:
         return JSONResponse({"status": "not_ready", "error": str(exc)}, status_code=503)
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(render_metrics(), media_type="text/plain; version=0.0.4")
+
+
 @app.get("/api/simulations")
 def simulations(_: Principal = Depends(require_http_auth)) -> dict[str, Any]:
     k = get_kernels()
@@ -164,6 +181,28 @@ async def get_bench(
 @app.get("/api/gradcheck")
 async def gradcheck(_: Principal = Depends(require_http_auth)) -> dict[str, Any]:
     return await asyncio.to_thread(bench_mod.gradcheck_report)
+
+
+@app.get("/api/admin/keys")
+def list_api_keys(_: Principal = Depends(require_admin)) -> list[dict[str, Any]]:
+    return [{"key_id": key.key_id, "tenant_id": key.tenant_id, "role": key.role}
+            for key in _auth.list_keys()]
+
+
+@app.post("/api/admin/keys")
+def create_api_key(payload: dict[str, Any] = Body(...), _: Principal = Depends(require_admin)) -> dict[str, str]:
+    tenant_id = str(payload.get("tenant_id", "")).strip()
+    role = str(payload.get("role", "viewer"))
+    if not tenant_id or role not in {"admin", "viewer"}:
+        raise HTTPException(status_code=400, detail="tenant_id and role=admin|viewer are required")
+    secret = secrets.token_urlsafe(32)
+    key = _auth.create_key(tenant_id, secret, role)
+    return {"key_id": key.key_id, "tenant_id": key.tenant_id, "role": key.role, "api_key": secret}
+
+
+@app.delete("/api/admin/keys/{key_id}", status_code=204)
+def revoke_api_key(key_id: str, _: Principal = Depends(require_admin)) -> None:
+    _auth.revoke_key(key_id)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +250,7 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
 
     await websocket.accept()
     _clients["count"] += 1
+    ACTIVE_CLIENTS.set(_clients["count"])
     _tenant_clients[tenant_id] = _tenant_clients.get(tenant_id, 0) + 1
     params = _parse_params(websocket.query_params.get("params"))
     sim = create(sim_id, params)
@@ -226,6 +266,7 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
         try:
             while not stop.is_set():
                 raw = await websocket.receive_text()
+                WS_MESSAGES.labels(tenant_id).inc()
                 if not _rate_limiter.allow(tenant_id, settings.rate_limit_per_minute):
                     await websocket.close(code=4429, reason="rate limit exceeded")
                     break
@@ -307,6 +348,7 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
     finally:
         stop.set()
         _clients["count"] = max(0, _clients["count"] - 1)
+        ACTIVE_CLIENTS.set(_clients["count"])
         _tenant_clients[tenant_id] = max(0, _tenant_clients.get(tenant_id, 1) - 1)
         if _tenant_clients[tenant_id] == 0:
             del _tenant_clients[tenant_id]

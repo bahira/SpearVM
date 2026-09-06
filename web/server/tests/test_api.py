@@ -26,6 +26,12 @@ def test_catalogue():
     assert {"flowfield", "wavefield", "trainer"} <= ids
 
 
+def test_metrics_endpoint():
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert b"spearvm_http_requests_total" in response.content
+
+
 def test_http_auth_is_opt_in_and_fails_closed(monkeypatch):
     monkeypatch.setattr("spearvm_sim.app._auth", Authenticator(True, ("acme:secret",)))
     assert client.get("/api/simulations").status_code == 401

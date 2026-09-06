@@ -53,8 +53,17 @@ SPEARVM_MAX_RATE=60
 SPEARVM_FORCE_FALLBACK=0
 ```
 
-For a commercial deployment, place the service behind TLS termination and an
-identity-aware reverse proxy. The service includes opt-in API-key
+For a commercial deployment, start the staging stack with:
+
+```bash
+docker compose -f docker-compose.staging.yml --profile edge up --build -d
+python scripts/load_test.py
+./scripts/backup_staging.sh
+```
+
+The optional Caddy edge service terminates TLS and proxies to the API. Set
+`DOMAIN` to a real DNS name for automatic certificates. For a commercial
+deployment, place the service behind TLS termination and an identity-aware reverse proxy. The service includes opt-in API-key
 authentication and per-tenant connection quotas, but does not implement user
 accounts, billing, license-key enforcement, or external tenant provisioning.
 Configure it with:

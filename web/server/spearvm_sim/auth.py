@@ -20,6 +20,7 @@ from typing import Protocol
 class Principal:
     tenant_id: str
     key_id: str = "local"
+    role: str = "admin"
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class ApiKey:
     tenant_id: str
     digest: str
     revoked_at: float | None = None
+    role: str = "viewer"
 
 
 def hash_api_key(secret: str, salt: str | None = None) -> str:
@@ -64,13 +66,13 @@ class MemoryKeyStore:
         for entry in entries:
             tenant, separator, secret = entry.partition(":")
             if separator and tenant.strip() and secret:
-                self.create(tenant.strip(), secret)
+                self.create(tenant.strip(), secret, "admin")
 
     def list_active(self) -> list[ApiKey]:
         return [key for key in self._keys.values() if key.revoked_at is None]
 
-    def create(self, tenant_id: str, secret: str) -> ApiKey:
-        key = ApiKey(str(uuid.uuid4()), tenant_id, hash_api_key(secret))
+    def create(self, tenant_id: str, secret: str, role: str = "viewer") -> ApiKey:
+        key = ApiKey(str(uuid.uuid4()), tenant_id, hash_api_key(secret), role=role)
         self._keys[key.key_id] = key
         return key
 
@@ -95,9 +97,11 @@ class PostgresKeyStore:
                     tenant_id TEXT NOT NULL,
                     digest TEXT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    revoked_at TIMESTAMPTZ NULL
+                    revoked_at TIMESTAMPTZ NULL,
+                    role TEXT NOT NULL DEFAULT 'viewer'
                 )
             """)
+            conn.execute("ALTER TABLE spearvm_api_keys ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'viewer'")
 
     def _connect(self):
         return self._psycopg.connect(self.url)
@@ -105,17 +109,17 @@ class PostgresKeyStore:
     def list_active(self) -> list[ApiKey]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT key_id, tenant_id, digest, EXTRACT(EPOCH FROM revoked_at) "
+                "SELECT key_id, tenant_id, digest, EXTRACT(EPOCH FROM revoked_at), role "
                 "FROM spearvm_api_keys WHERE revoked_at IS NULL"
             ).fetchall()
-        return [ApiKey(str(row[0]), row[1], row[2], row[3]) for row in rows]
+        return [ApiKey(str(row[0]), row[1], row[2], row[3], row[4]) for row in rows]
 
-    def create(self, tenant_id: str, secret: str) -> ApiKey:
-        key = ApiKey(str(uuid.uuid4()), tenant_id, hash_api_key(secret))
+    def create(self, tenant_id: str, secret: str, role: str = "viewer") -> ApiKey:
+        key = ApiKey(str(uuid.uuid4()), tenant_id, hash_api_key(secret), role=role)
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO spearvm_api_keys (key_id, tenant_id, digest) VALUES (%s, %s, %s)",
-                (key.key_id, key.tenant_id, key.digest),
+                "INSERT INTO spearvm_api_keys (key_id, tenant_id, digest, role) VALUES (%s, %s, %s, %s)",
+                (key.key_id, key.tenant_id, key.digest, key.role),
             )
         return key
 
@@ -136,7 +140,7 @@ class AuthService:
             return None
         for key in self.store.list_active():
             if verify_api_key(secret, key.digest):
-                return Principal(key.tenant_id, key.key_id)
+                return Principal(key.tenant_id, key.key_id, key.role)
         return None
 
     def require(self, secret: str | None) -> Principal:
@@ -144,6 +148,15 @@ class AuthService:
         if principal is None:
             raise PermissionError("authentication required")
         return principal
+
+    def list_keys(self) -> list[ApiKey]:
+        return self.store.list_active()
+
+    def create_key(self, tenant_id: str, secret: str, role: str = "viewer") -> ApiKey:
+        return self.store.create(tenant_id, secret, role)
+
+    def revoke_key(self, key_id: str) -> None:
+        self.store.revoke(key_id)
 
 
 class Authenticator:

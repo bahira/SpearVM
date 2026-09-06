@@ -19,6 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Manage SpearVM tenant API keys")
     parser.add_argument("action", choices=("create", "revoke"))
     parser.add_argument("value", help="tenant id for create, key id for revoke")
+    parser.add_argument("--role", choices=("admin", "viewer"), default="viewer")
     args = parser.parse_args()
     url = os.environ.get("DATABASE_URL")
     if not url:
@@ -26,7 +27,7 @@ def main() -> None:
     store = PostgresKeyStore(url)
     if args.action == "create":
         secret = secrets.token_urlsafe(32)
-        key = store.create(args.value, secret)
+        key = store.create(args.value, secret, args.role)
         print(f"key_id={key.key_id}")
         print(f"api_key={secret}")
         print("Store the api_key now; only its hash is persisted.")

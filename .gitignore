@@ -25,6 +25,7 @@ venv/
 .env
 .env.*
 !.env.staging.example
+backups/
 .pytest_cache/
 
 # --- autotuner (experiments/) : .so generes, on garde les CSV/JSON de mesure ---
