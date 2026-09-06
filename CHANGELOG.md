@@ -1,6 +1,19 @@
 # Changelog
 
 ## non publie
+- **`exp` AVX2 minimax : 1.69 ulp en f32 (libm : 1.66), x1.2 a x1.9** — polynome
+  cherche par iterations de Remez en erreur relative, degre choisi par mesure
+  (5 en f32, 10 en f64) ; reduction d'argument ln2 scindee hi/lo, 2^k par champ
+  d'exposant. `spur_batch_exp[_f32]`, `spur_math.exp`.
+- **`softmax` par ligne : x1.9 a x6.2 vs numpy, et x11.8 en causal** — le noyau
+  prend un vecteur de **longueurs** au lieu d'un masque -inf materialise, et ne
+  parcourt que les entrees valides. Le schema "online" facon flash-attention a
+  ete implemente puis abandonne : perdant d'un facteur 1.2 a 4 sur CPU (la
+  ligne relue tient en L1). `spur_softmax_rows[_f32]`, `spur_math.softmax`.
+- **`attention_tile` : x2.77 median vs numpy, jusqu'a 123 GFLOPS f32** — GEMM NT
+  -> softmax masque -> GEMM NT, echelle 1/sqrt(d) absorbee par l'exponentielle
+  (aucune passe de plus sur les scores). `spur_attention_tile_f32`,
+  `spur_math.attention_tile`. Journal : `docs/TRANSCEND.md`.
 - **`web/` — 5e cas d'usage : champ implicite neuronal (SDF)** — un MLP evalue
   par voxel sculpte une surface signee ; le navigateur la ray-marche (sphere
   tracing dans une texture 3D demi-flottante, normales par differences

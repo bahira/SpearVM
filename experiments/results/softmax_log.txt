@@ -1,0 +1,28 @@
+==============================================================================
+exp AVX2 minimax + softmax : verification et debit
+==============================================================================
+
+### 1. exp : precision contre la reference float64
+  f32 : spur 2.017e-07 =  1.69 ulp   |   numpy 1.984e-07 = 1.66 ulp
+  f64 : spur 4.718e-16 =  2.12 ulp   |   numpy 0.000e+00 = 0.00 ulp
+
+### 2. exp : debit contre numpy (libm vectorise)
+  f32 n=2^14 : spur   0.0200 ms  numpy   0.0247 ms  -> x1.24  (821 M elem/s)
+  f64 n=2^14 : spur   0.0227 ms  numpy   0.0309 ms  -> x1.36  (723 M elem/s)
+  f32 n=2^18 : spur   0.0867 ms  numpy   0.1616 ms  -> x1.86  (3023 M elem/s)
+  f64 n=2^18 : spur   0.2580 ms  numpy   0.2380 ms  -> x0.92  (1016 M elem/s)
+  f32 n=2^22 : spur   1.9969 ms  numpy   2.4366 ms  -> x1.22  (2100 M elem/s)
+  f64 n=2^22 : spur   6.6825 ms  numpy  12.4750 ms  -> x1.87  (628 M elem/s)
+
+### 3. softmax par ligne : deux strategies contre numpy
+     64x128   3pass   0.0092  online   0.0214  numpy   0.0379 ms  -> x4.14 (3pass, 11 GB/s)  err 2.0e-07 vs numpy f32 2.5e-07
+    256x512   3pass   0.0414  online   0.0817  numpy   0.2582 ms  -> x6.23 (3pass, 38 GB/s)  err 6.2e-07 vs numpy f32 2.7e-07
+   1024x1024  3pass   0.3365  online   1.3810  numpy   1.9721 ms  -> x5.86 (3pass, 37 GB/s)  err 7.4e-07 vs numpy f32 2.3e-07
+   4096x512   3pass   2.6942  online   3.3862  numpy   5.1828 ms  -> x1.92 (3pass, 9 GB/s)  err 6.9e-07 vs numpy f32 3.4e-07
+    256x8192  3pass   0.6855  online   1.2841  numpy   3.3476 ms  -> x4.88 (3pass, 37 GB/s)  err 3.8e-06 vs numpy f32 2.2e-07
+
+### 4. softmax causal (longueurs variables) — la forme utile a l'attention
+  2048x1024 triangulaire : spur 0.7145 ms  numpy vectorise 8.4418 ms  -> x11.8   err 9.2e-08
+  (le noyau ne parcourt que les len[i] entrees valides ; numpy doit traiter la matrice entiere)
+
+-> results/softmax_bench.csv / .json

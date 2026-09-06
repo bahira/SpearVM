@@ -9,6 +9,55 @@ sur grille dense indépendante ; `MSE` = erreur quadratique moyenne.
 
 ---
 
+## EXP — minimax Remez + reduction d'argument (SpearVM)
+
+`exp(x)`, reference IEEE. Forme : `x = k·ln2 + r` (ln2 scinde hi/lo, `k·hi`
+exact), polynome minimax **en erreur relative** sur `r ∈ [−ln2/2, ln2/2]`,
+`2^k` reconstruit par ecriture du champ d'exposant.
+
+| Variante | Degre | L-inf relatif | ulp | Debit | vs numpy/libm |
+|---|---|---|---|---|---|
+| **`exp` f32** | 5 | **2.02e-7** | **1.69** | 3.0 G elem/s | x1.2 – x1.9 |
+| **`exp` f64** | 10 | **4.72e-16** | 2.12 | 1.0 G elem/s | x0.9 – x1.9 |
+
+libm f32 mesure 1.66 ulp : on egale sa precision en allant plus vite. En f64
+libm est correctement arrondie (0 ulp) et nous ne le sommes pas — 2 ulp assumes.
+Le degre est choisi par mesure : au-dela de 5 (f32) et 10 (f64), le format
+limite, pas le polynome.
+
+**C** : `spur_batch_exp[_f32]`, `spur_exp8_ps` / `spur_exp4_pd` (inline).
+**Python** : `spur_math.exp(x)`. **Recherche** : `experiments/transcend/fit_exp.py`.
+
+---
+
+## SOFTMAX — trois passes + longueurs causales (SpearVM)
+
+| Variante | Forme | Gain vs numpy | Note |
+|---|---|---|---|
+| **`softmax_rows`** | max, exp+somme, normalisation | **x1.9 – x6.2** | 37 GB/s |
+| schema "online" | rescale incremental (flash-attention) | x0.5 – x0.8 | **perdant sur CPU** |
+| **`softmax_rows` + `len[]`** | causal sans masque materialise | **x11.8** | ne lit que les entrees valides |
+
+**C** : `spur_softmax_rows[_f32](X, Y, rows, cols, len)`.
+**Python** : `spur_math.softmax(x, lengths=None)`.
+
+---
+
+## ATTENTION TILE — GEMM NT + softmax fusionne (SpearVM)
+
+`O = softmax(scale·Q·Kᵀ, causal)·V`. Echelle absorbee par l'exponentielle,
+masque porte par un vecteur de longueurs, les deux produits en convention NT.
+
+| Metrique | Valeur mesuree |
+|---|---|
+| Gain vs numpy | **x2.77 median** (x1.19 a x3.57) |
+| Debit | jusqu'a **122.9 GFLOPS** f32 |
+| Erreur relative | <= 6.6e-7 |
+
+**C** : `spur_attention_tile_f32`. **Python** : `spur_math.attention_tile(q,k,v)`.
+
+---
+
 ## GELU — 3 variantes (SpearVM)
 
 `GELU(x) = 0.5·x·(1+erf(x/√2))`, référence exacte.

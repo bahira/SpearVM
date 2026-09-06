@@ -166,6 +166,109 @@ def _dest(m, n, dt, out):
     return out
 
 
+# --- exp et softmax (noyaux AVX2 minimax, cf. docs/TRANSCEND.md) ------------
+_PD_ = ctypes.POINTER(ctypes.c_double)
+_PF_ = ctypes.POINTER(ctypes.c_float)
+_exp_f64 = _dll.spur_batch_exp
+_exp_f64.argtypes = [_PD_, _PD_, ctypes.c_longlong]
+_exp_f64.restype = None
+_exp_f32 = _dll.spur_batch_exp_f32
+_exp_f32.argtypes = [_PF_, _PF_, ctypes.c_longlong]
+_exp_f32.restype = None
+_softmax_f64 = _dll.spur_softmax_rows
+_softmax_f64.argtypes = [_PD_, _PD_, ctypes.c_longlong, ctypes.c_longlong,
+                         ctypes.POINTER(ctypes.c_int)]
+_softmax_f64.restype = None
+_softmax_f32 = _dll.spur_softmax_rows_f32
+_softmax_f32.argtypes = [_PF_, _PF_, ctypes.c_longlong, ctypes.c_longlong,
+                         ctypes.POINTER(ctypes.c_int)]
+_softmax_f32.restype = None
+
+
+def exp(x, out=None):
+    """exp(x) vectorise AVX2. Precision mesuree : 1.69 ulp (f32), 2.12 ulp (f64)."""
+    dt = np.float32 if np.asarray(x).dtype == np.float32 else np.float64
+    x = np.ascontiguousarray(x, dtype=dt)
+    y = np.empty_like(x) if out is None else out
+    if y.shape != x.shape or y.dtype != dt or not y.flags["C_CONTIGUOUS"]:
+        raise ValueError("out doit etre C-contigu, de meme forme et meme dtype")
+    ptr = _PF_ if dt == np.float32 else _PD_
+    fn = _exp_f32 if dt == np.float32 else _exp_f64
+    fn(x.ctypes.data_as(ptr), y.ctypes.data_as(ptr), x.size)
+    return y
+
+
+def softmax(x, lengths=None, out=None):
+    """Softmax par ligne sur un tableau 2D.
+
+    `lengths` : (rows,) entiers, nombre d'entrees valides par ligne (le reste
+    est mis a zero). C'est la forme causale utile a l'attention : aucun -inf a
+    materialiser. Mesure : x11.8 vs numpy vectorise sur un masque triangulaire.
+    """
+    dt = np.float32 if np.asarray(x).dtype == np.float32 else np.float64
+    x = np.ascontiguousarray(x, dtype=dt)
+    if x.ndim != 2:
+        raise ValueError(f"softmax attend un tableau 2D, recu {x.ndim}D")
+    rows, cols = x.shape
+    y = np.empty_like(x) if out is None else out
+    if y.shape != x.shape or y.dtype != dt or not y.flags["C_CONTIGUOUS"]:
+        raise ValueError("out doit etre C-contigu, de meme forme et meme dtype")
+    lp = None
+    if lengths is not None:
+        lengths = np.ascontiguousarray(lengths, dtype=np.int32)
+        if lengths.shape != (rows,):
+            raise ValueError(f"lengths attendu ({rows},), recu {lengths.shape}")
+        lp = lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    ptr = _PF_ if dt == np.float32 else _PD_
+    fn = _softmax_f32 if dt == np.float32 else _softmax_f64
+    fn(x.ctypes.data_as(ptr), y.ctypes.data_as(ptr), rows, cols, lp)
+    return y
+
+
+_attention_tile = _dll.spur_attention_tile_f32
+_attention_tile.argtypes = [_PF_, _PF_, _PF_, _PF_, ctypes.c_longlong,
+                            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_float,
+                            ctypes.POINTER(ctypes.c_int), _PF_]
+_attention_tile.restype = None
+
+
+def attention_tile(q, k, v, scale=None, lengths=None, out=None, scratch=None):
+    """O = softmax(scale . Q.K^T, masque causal) . V  — float32.
+
+    q:(tq,d) k:(tk,d) v:(tk,d). `lengths` (tq,) = nombre de cles visibles par
+    requete (None = toutes). `scale` par defaut 1/sqrt(d).
+
+    Les deux produits sont en convention NT (celle des noyaux GEMM v2) et
+    l'echelle est absorbee par le softmax : aucune passe supplementaire sur la
+    matrice de scores, aucun masque -inf a materialiser.
+    """
+    q = np.ascontiguousarray(q, dtype=np.float32)
+    k = np.ascontiguousarray(k, dtype=np.float32)
+    v = np.ascontiguousarray(v, dtype=np.float32)
+    tq, d = q.shape
+    tk = k.shape[0]
+    if k.shape[1] != d or v.shape != (tk, d):
+        raise ValueError(f"formes incompatibles : q{q.shape} k{k.shape} v{v.shape}")
+    vt = np.ascontiguousarray(v.T)            # V transpose -> second GEMM en NT
+    o = np.empty((tq, d), dtype=np.float32) if out is None else out
+    if o.shape != (tq, d) or o.dtype != np.float32 or not o.flags["C_CONTIGUOUS"]:
+        raise ValueError("out doit etre (tq,d) float32 C-contigu")
+    buf = np.empty((tq, tk), dtype=np.float32) if scratch is None else scratch
+    if buf.shape != (tq, tk) or buf.dtype != np.float32:
+        raise ValueError("scratch doit etre (tq,tk) float32")
+    lp = None
+    if lengths is not None:
+        lengths = np.ascontiguousarray(lengths, dtype=np.int32)
+        if lengths.shape != (tq,):
+            raise ValueError(f"lengths attendu ({tq},), recu {lengths.shape}")
+        lp = lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    _attention_tile(q.ctypes.data_as(_PF_), k.ctypes.data_as(_PF_),
+                    vt.ctypes.data_as(_PF_), o.ctypes.data_as(_PF_),
+                    tq, tk, d, float(1.0 / np.sqrt(d)) if scale is None else float(scale),
+                    lp, buf.ctypes.data_as(_PF_))
+    return o
+
+
 def matmul_nt(a, b, out=None):
     """C = A . B^T. a:(m,k), b:(n,k) -> (m,n). float32 ou float64.
 

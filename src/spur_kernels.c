@@ -1384,3 +1384,191 @@ void spur_matmul_nt_gelu_f32(const float* A, const float* B, const float* bias,
     spur_matmul_nt_f32(A, B, C, m, k, n);
     spur_gelu_bias_rows_f32(C, m, n, bias);
 }
+
+/* ============================================================================
+   EXP AVX2 + SOFTMAX — la brique qui manquait pour l'attention
+   ----------------------------------------------------------------------------
+   exp(x) = 2^k * exp(r), k = round(x/ln2), |r| <= ln2/2.
+   ln2 est scinde en (hi, lo) : hi n'a que 11 bits de mantisse, donc k*hi est
+   exact et la soustraction x - k*hi l'est aussi (Sterbenz). Le polynome sur r
+   est un minimax en **erreur relative** obtenu par iterations de Remez
+   (experiments/transcend/fit_exp.py).
+
+   Precision mesuree contre la reference float64 (500 001 points) :
+       f32, degre 5  : 2.02e-07 = 1.69 ulp   (numpy/libm : 1.66 ulp)
+       f64, degre 10 : 4.72e-16 = 2.12 ulp
+   Debit mesure : jusqu'a 3.0 G elements/s en f32 (x1.2 a x1.9 vs numpy).
+
+   Le softmax par ligne en decoule. Trois passes battent le schema "online"
+   facon flash-attention sur cette machine (mesure : x2 a x4 d'ecart) : le
+   rescale incremental coute plus cher que la relecture d'une ligne deja en L1.
+   ========================================================================== */
+
+static inline __m256 spur_exp8_ps(__m256 x){
+    const __m256 LOG2E  = _mm256_set1_ps(1.4426950408889634f);
+    const __m256 LN2_HI = _mm256_set1_ps(0.693359375f);
+    const __m256 LN2_LO = _mm256_set1_ps(-2.12194440e-4f);
+    x = _mm256_max_ps(x, _mm256_set1_ps(-87.33654f));
+    __m256 k = _mm256_round_ps(_mm256_mul_ps(x, LOG2E),
+                               _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256 r = _mm256_fnmadd_ps(k, LN2_HI, x);
+    r = _mm256_fnmadd_ps(k, LN2_LO, r);
+    __m256 p = _mm256_set1_ps(0.008297655080344314f);
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.04191538199170809f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.16667574728755657f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.49998894851221815f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.9999996919915163f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0000000716546822f));
+    __m256i pw = _mm256_slli_epi32(
+        _mm256_add_epi32(_mm256_cvtps_epi32(k), _mm256_set1_epi32(127)), 23);
+    return _mm256_mul_ps(p, _mm256_castsi256_ps(pw));
+}
+
+static inline __m256d spur_exp4_pd(__m256d x){
+    const __m256d LOG2E  = _mm256_set1_pd(1.4426950408889634);
+    const __m256d LN2_HI = _mm256_set1_pd(0.693145751953125);
+    const __m256d LN2_LO = _mm256_set1_pd(1.42860682030941723212e-6);
+    x = _mm256_max_pd(x, _mm256_set1_pd(-708.396418));
+    __m256d k = _mm256_round_pd(_mm256_mul_pd(x, LOG2E),
+                                _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256d r = _mm256_fnmadd_pd(k, LN2_HI, x);
+    r = _mm256_fnmadd_pd(k, LN2_LO, r);
+    __m256d p = _mm256_set1_pd(2.756128125488038e-07);
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(2.763753106961904e-06));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(2.4801689582726192e-05));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.00019841177154153087));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.0013888888750558034));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.00833333337961161));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.041666666667305056));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.16666666666574947));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(0.49999999999998845));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(1.0000000000000047));
+    p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(1.0));
+    __m256i ki = _mm256_cvtepi32_epi64(_mm256_cvtpd_epi32(k));
+    __m256i pw = _mm256_slli_epi64(_mm256_add_epi64(ki, _mm256_set1_epi64x(1023)), 52);
+    return _mm256_mul_pd(p, _mm256_castsi256_pd(pw));
+}
+
+void spur_batch_exp_f32(const float* x, float* y, long long n){
+    long long i = 0;
+    #pragma omp parallel for schedule(static)
+    for (long long b = 0; b < n / 8; b++)
+        _mm256_storeu_ps(y + b * 8, spur_exp8_ps(_mm256_loadu_ps(x + b * 8)));
+    for (i = (n / 8) * 8; i < n; i++) y[i] = expf(x[i]);
+}
+
+void spur_batch_exp(const double* x, double* y, long long n){
+    long long i = 0;
+    #pragma omp parallel for schedule(static)
+    for (long long b = 0; b < n / 4; b++)
+        _mm256_storeu_pd(y + b * 4, spur_exp4_pd(_mm256_loadu_pd(x + b * 4)));
+    for (i = (n / 4) * 4; i < n; i++) y[i] = exp(x[i]);
+}
+
+static inline float spur_hmax8(__m256 v){
+    __m128 lo = _mm256_castps256_ps128(v), hi = _mm256_extractf128_ps(v, 1);
+    lo = _mm_max_ps(lo, hi);
+    lo = _mm_max_ps(lo, _mm_movehl_ps(lo, lo));
+    lo = _mm_max_ss(lo, _mm_shuffle_ps(lo, lo, 1));
+    return _mm_cvtss_f32(lo);
+}
+
+/* softmax par ligne. `len` : nombre d'entrees valides par ligne (NULL = cols).
+   Les entrees au-dela de len[i] sont mises a zero — c'est la forme causale
+   dont l'attention a besoin, sans materialiser de -inf.                     */
+static void spur_softmax_core_f32(const float* X, float* Y, long long rows,
+                                  long long cols, const int* len, float scale){
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < rows; i++){
+        const long long n = len ? (len[i] < cols ? len[i] : cols) : cols;
+        const float* xr = X + i * cols;
+        float* yr = Y + i * cols;
+        if (n <= 0){ memset(yr, 0, (size_t)cols * sizeof(float)); continue; }
+
+        __m256 vmax = _mm256_set1_ps(-INFINITY);
+        long long j = 0;
+        for (; j + 7 < n; j += 8) vmax = _mm256_max_ps(vmax, _mm256_loadu_ps(xr + j));
+        float m = (n >= 8) ? spur_hmax8(vmax) : -INFINITY;
+        for (; j < n; j++) m = xr[j] > m ? xr[j] : m;
+
+        /* exp(a(x-m)) : l'echelle 1/sqrt(d) de l'attention est absorbee ici,
+           sans passe supplementaire sur la matrice de scores. */
+        __m256 vm = _mm256_set1_ps(m), vs = _mm256_setzero_ps();
+        __m256 va = _mm256_set1_ps(scale);
+        for (j = 0; j + 7 < n; j += 8){
+            __m256 e = spur_exp8_ps(_mm256_mul_ps(
+                _mm256_sub_ps(_mm256_loadu_ps(xr + j), vm), va));
+            _mm256_storeu_ps(yr + j, e);
+            vs = _mm256_add_ps(vs, e);
+        }
+        float s = (n >= 8) ? hsum8(vs) : 0.0f;
+        for (; j < n; j++){ yr[j] = expf((xr[j] - m) * scale); s += yr[j]; }
+
+        const float inv = 1.0f / s;
+        __m256 vinv = _mm256_set1_ps(inv);
+        for (j = 0; j + 7 < n; j += 8)
+            _mm256_storeu_ps(yr + j, _mm256_mul_ps(_mm256_loadu_ps(yr + j), vinv));
+        for (; j < n; j++) yr[j] *= inv;
+        if (n < cols) memset(yr + n, 0, (size_t)(cols - n) * sizeof(float));
+    }
+}
+
+void spur_softmax_rows_f32(const float* X, float* Y, long long rows,
+                           long long cols, const int* len){
+    spur_softmax_core_f32(X, Y, rows, cols, len, 1.0f);
+}
+
+/* ---------------------------------------------------------------------------
+   Tuile d'attention : O = softmax(scale * Q.K^T, masque causal) . V
+   Les deux produits sont en convention NT, celle des noyaux GEMM v2 :
+       scores = Q (tq,d) . K^T ou K est (tk,d)
+       O      = scores (tq,tk) . V ou V est fourni **transpose** (d,tk)
+   L'echelle 1/sqrt(d) est absorbee par le softmax (aucune passe de plus).
+   `lens[i]` = nombre de cles visibles par la requete i (NULL = toutes).
+   `scratch` : tampon (tq*tk) fourni par l'appelant, ou NULL pour allouer.   */
+void spur_attention_tile_f32(const float* Q, const float* K, const float* Vt,
+                             float* O, long long tq, long long tk, long long d,
+                             float scale, const int* lens, float* scratch){
+    if (tq <= 0 || tk <= 0 || d <= 0) return;
+    float* S = scratch;
+    float* owned = NULL;
+    if (!S){
+        owned = (float*)SPUR_AALLOC(sizeof(float) * (size_t)tq * tk);
+        if (!owned) return;
+        S = owned;
+    }
+    spur_matmul_nt_f32(Q, K, S, tq, d, tk);          /* scores (tq, tk)      */
+    spur_softmax_core_f32(S, S, tq, tk, lens, scale); /* poids, en place     */
+    spur_matmul_nt_f32(S, Vt, O, tq, tk, d);         /* O = poids . V (tq,d) */
+    if (owned) SPUR_AFREE(owned);
+}
+
+void spur_softmax_rows(const double* X, double* Y, long long rows,
+                       long long cols, const int* len){
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < rows; i++){
+        const long long n = len ? (len[i] < cols ? len[i] : cols) : cols;
+        const double* xr = X + i * cols;
+        double* yr = Y + i * cols;
+        if (n <= 0){ memset(yr, 0, (size_t)cols * sizeof(double)); continue; }
+
+        double m = -INFINITY;
+        for (long long j = 0; j < n; j++) if (xr[j] > m) m = xr[j];
+        __m256d vm = _mm256_set1_pd(m), vs = _mm256_setzero_pd();
+        long long j = 0;
+        for (; j + 3 < n; j += 4){
+            __m256d e = spur_exp4_pd(_mm256_sub_pd(_mm256_loadu_pd(xr + j), vm));
+            _mm256_storeu_pd(yr + j, e);
+            vs = _mm256_add_pd(vs, e);
+        }
+        double s = (n >= 4) ? hs256(vs) : 0.0;
+        for (; j < n; j++){ yr[j] = exp(xr[j] - m); s += yr[j]; }
+
+        const double inv = 1.0 / s;
+        __m256d vinv = _mm256_set1_pd(inv);
+        for (j = 0; j + 3 < n; j += 4)
+            _mm256_storeu_pd(yr + j, _mm256_mul_pd(_mm256_loadu_pd(yr + j), vinv));
+        for (; j < n; j++) yr[j] *= inv;
+        if (n < cols) memset(yr + n, 0, (size_t)(cols - n) * sizeof(double));
+    }
+}

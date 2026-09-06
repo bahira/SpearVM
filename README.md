@@ -103,6 +103,29 @@ contre 0.36× avant cette campagne). Là où SpearVM passe devant, c'est sur les
 formes que BLAS amortit mal — **k court, dimension étroite** — et sur le
 **pipeline fusionné** NT sans copies.
 
+## exp, softmax et attention (v0.6+)
+
+Le dépôt n'avait ni `exp` ni `softmax` — les deux briques que réclame
+l'attention. Elles ont été construites et mesurées ([`docs/TRANSCEND.md`](docs/TRANSCEND.md)) :
+
+```python
+sm.exp(x)                                   # 1.69 ulp (f32), 2.12 ulp (f64)
+sm.softmax(x, lengths=None)                 # par ligne ; lengths = masque causal
+sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V
+```
+
+| Noyau | Précision | Gain vs numpy |
+|---|---|---|
+| `exp` f32 | 1.69 ulp (libm : 1.66) | ×1.2 – ×1.9, jusqu'à 3.0 G elem/s |
+| `softmax` | ≈ numpy f32 | ×1.9 – ×6.2 |
+| `softmax` causal (longueurs) | idem | **×11.8** |
+| `attention_tile` | 6.6e-07 relatif | **×2.77 médian**, jusqu'à 123 GFLOPS |
+
+Le masque causal est porté par un vecteur de **longueurs** : rien à
+matérialiser, et le noyau ne parcourt que les entrées valides. Le schéma
+« online » de flash-attention a été implémenté puis rejeté — perdant d'un
+facteur 1.2 à 4 sur CPU, où la ligne relue tient en L1.
+
 ## Pipeline NN end-to-end (bench_nn)
 
 `Y = gelu(X · Wᵀ)` — pattern FFN transformer. M=1024, K=768, N=3072 (4.8 GFLOP).
