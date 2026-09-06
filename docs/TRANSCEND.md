@@ -223,7 +223,47 @@ partait sur `legacy` : **la moitié du « gain bf16 » était un effet de choix 
 noyau**. C'est cette mesure qui a produit la règle (c) ci-dessus ; une fois les
 deux chemins à armes égales, le gain bf16 réel tombe à ×1.08–1.41.
 
-## 6. API et couverture
+## 6. Bout-en-bout : un bloc de décodeur complet
+
+Les briques assemblées en un bloc transformeur standard
+(`experiments/attention/bench_block.py`) :
+
+```
+h = x + Wo · Attention(RMSNorm(x))            # attention_mha / KVCache
+y = h + W2 · GELU(W1 · RMSNorm(h))            # matmul_nt_gelu + matmul_nt
+```
+
+**Prefill** (tout le contexte d'un coup, masque causal) :
+
+| N | d_model | H_q/H_kv | d_ff | SpearVM | numpy | gain | tokens/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 256 | 512 | 8/2 | 2048 | 14.6 ms | 41.2 | ×2.82 | 17 506 |
+| 512 | 512 | 8/2 | 2048 | 32.9 ms | 144.6 | ×4.39 | 15 546 |
+| 1024 | 768 | 12/4 | 3072 | 129.0 ms | 781.1 | ×6.05 | 7 936 |
+| 2048 | 768 | 12/4 | 3072 | **327.7 ms** | 3160.7 | **×9.65** | 6 250 |
+
+Le gain croît avec N : c'est la part quadratique de l'attention qui domine, et
+c'est exactement là que le softmax causal par longueurs et la tuile fusionnée
+paient.
+
+**Décodage** (un token contre un cache KV de tk) :
+
+| tk | d_model | H_q/H_kv | SpearVM | numpy | gain | tokens/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 512 | 512 | 8/2 | 1.28 ms | 1.14 | **×0.89** | 783 |
+| 2048 | 512 | 8/2 | 1.40 ms | 2.41 | ×1.72 | 715 |
+| 4096 | 768 | 12/4 | 3.24 ms | 7.66 | ×2.37 | 309 |
+| 8192 | 768 | 12/4 | 4.04 ms | 14.91 | ×3.69 | 248 |
+
+Écart maximal avec la référence numpy : **1.1e-06** (les deux chemins partagent
+la même GELU SPEAR ; le reste vient de l'ordre des sommations en float32).
+
+La ligne à ×0.89 est publiée telle quelle : à contexte court, le bloc est
+dominé par les GEMV du FFN (m = 1), purement limités par la bande passante —
+il n'y a rien à y gagner, et nous payons quelques appels de plus. Le gain
+n'apparaît qu'à partir de tk ≈ 2048.
+
+## 7. API et couverture
 
 ```python
 import spur_math as sm
@@ -243,7 +283,7 @@ float64, masque causal (la première requête ne voit qu'une clé : sa sortie do
 **bit-à-bit** du cache packé, et bornes du bf16. Suite complète du dépôt :
 **77 tests**.
 
-## 7. Ce qui n'a pas marché
+## 8. Ce qui n'a pas marché
 
 * **Le softmax « online »** : −20 % à −75 % contre les trois passes (§2).
   L'argument flash-attention est un argument de hiérarchie mémoire GPU.

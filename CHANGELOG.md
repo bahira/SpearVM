@@ -1,6 +1,11 @@
 # Changelog
 
 ## non publie
+- **bloc de decodeur complet** (`experiments/attention/bench_block.py`) :
+  attention + FFN + residuels assembles avec les noyaux du depot.
+  Prefill **x2.8 a x9.65** vs numpy (6 250 a 17 506 tokens/s), decodage
+  **x1.7 a x3.69** au-dela de 2 k de contexte (x0.89 en dessous, ou le bloc est
+  domine par les GEMV du FFN — publie tel quel). Ecart max 1.1e-06.
 - **attention multi-tetes en une seule descente C + cache KV** — a tq=4 (taille
   de micro-bloc QSA) la tuile plafonnait a 5 GFLOPS a cause du cout par appel :
   un appel ctypes par tete, une allocation par appel, un packing K/V refait a
