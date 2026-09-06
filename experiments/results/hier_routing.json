@@ -1,0 +1,139 @@
+{
+  "cout": [
+    {
+      "N": 1024,
+      "route_plat": 32896,
+      "route_hier": 31247,
+      "attn_ops": 3153920,
+      "plat_par_requete": 128.5,
+      "hier_par_requete": 122.05859375,
+      "ratio": 1.0527730662143566,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    },
+    {
+      "N": 2048,
+      "route_plat": 131328,
+      "route_hier": 81844,
+      "attn_ops": 7348224,
+      "plat_par_requete": 256.5,
+      "hier_par_requete": 159.8515625,
+      "ratio": 1.6046136552465666,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    },
+    {
+      "N": 4096,
+      "route_plat": 524800,
+      "route_hier": 212658,
+      "attn_ops": 15736832,
+      "plat_par_requete": 512.5,
+      "hier_par_requete": 207.673828125,
+      "ratio": 2.4678121678939893,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    },
+    {
+      "N": 8192,
+      "route_plat": 2098176,
+      "route_hier": 533406,
+      "attn_ops": 32514048,
+      "plat_par_requete": 1024.5,
+      "hier_par_requete": 260.4521484375,
+      "ratio": 3.9335440546225575,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    },
+    {
+      "N": 16384,
+      "route_plat": 8390656,
+      "route_hier": 1233096,
+      "attn_ops": 66068480,
+      "plat_par_requete": 2048.5,
+      "hier_par_requete": 301.048828125,
+      "ratio": 6.804544009549946,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    },
+    {
+      "N": 32768,
+      "route_plat": 33558528,
+      "route_hier": 2869031,
+      "attn_ops": 133177344,
+      "plat_par_requete": 4096.5,
+      "hier_par_requete": 350.2235107421875,
+      "ratio": 11.696816102719001,
+      "exp_route_plat": 1.999,
+      "exp_route_hier": 1.305
+    }
+  ],
+  "extrapolation_1M": {
+    "route_plat": 31127727897.61632,
+    "route_hier": 263637164.43938226,
+    "attn_ops": 5453754608.054667
+  },
+  "fidelite": [
+    {
+      "routeur": "plat (exhaustif)",
+      "ops_routage": 131328,
+      "accord_top_k": 1.0,
+      "masse_moyenne": 0.8456,
+      "masse_min": 0.4981,
+      "secondes": 0.84
+    },
+    {
+      "routeur": "hier f=8 beam min",
+      "ops_routage": 81844,
+      "accord_top_k": 0.676,
+      "masse_moyenne": 0.8385,
+      "masse_min": 0.4922,
+      "secondes": 0.9
+    },
+    {
+      "routeur": "hier f=8 beam 32",
+      "ops_routage": 174114,
+      "accord_top_k": 0.9038,
+      "masse_moyenne": 0.8456,
+      "masse_min": 0.4981,
+      "secondes": 0.91
+    },
+    {
+      "routeur": "hier f=8 beam 64",
+      "ops_routage": 199424,
+      "accord_top_k": 1.0,
+      "masse_moyenne": 0.8456,
+      "masse_min": 0.4981,
+      "secondes": 0.9
+    },
+    {
+      "routeur": "hier f=8 max",
+      "ops_routage": 81919,
+      "accord_top_k": 0.6397,
+      "masse_moyenne": 0.8384,
+      "masse_min": 0.49,
+      "secondes": 0.87
+    },
+    {
+      "routeur": "hier f=4 beam min",
+      "ops_routage": 113993,
+      "accord_top_k": 0.719,
+      "masse_moyenne": 0.8427,
+      "masse_min": 0.4924,
+      "secondes": 0.91
+    },
+    {
+      "routeur": "hier f=16 beam min",
+      "ops_routage": 68437,
+      "accord_top_k": 0.6418,
+      "masse_moyenne": 0.8301,
+      "masse_min": 0.469,
+      "secondes": 0.87
+    }
+  ],
+  "verifications": {
+    "causal": true,
+    "budget": true,
+    "fini": true,
+    "ecart_dense_budget_total": 4.054624936293131e-08
+  }
+}

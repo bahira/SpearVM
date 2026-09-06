@@ -160,8 +160,76 @@ Aucun de ces cinq changements n'affaiblit l'architecture proposée. Ils la
 rendent vérifiable — ce qui, dans un document qui revendique une doctrine
 « GROUNDED », est le seul critère qui compte.
 
+
+## 6. Contre-proposition mesurée : l'index hiérarchique manquant
+
+L'audit reproche au mémoire que borner le budget d'attention ne borne pas le
+coût du routage. Reproche facile ; voici l'implémentation qui le corrige et sa
+mesure (`experiments/attention/hierarchical.py`, banc `bench_hier.py`).
+
+**Principe.** Un arbre de résumés construit par pooling successif au-dessus des
+blocs IndexPool du mémoire (facteur `f` par niveau), parcouru en faisceau du
+grossier vers le fin, avec élagage causal à chaque niveau. Coût attendu
+`O((N/B) · beam · f · log N)` au lieu de `O((N/B)²)`.
+
+**Première tentative : échec, et le pourquoi est instructif.** Avec un faisceau
+égal au budget (512 blocs, le réflexe naturel), le développement `512 × 8 = 4096`
+candidats couvre l'index entier tant que `N < 16 k` : aucun élagage, et un
+surcoût de 15 %. Mesuré avant d'être corrigé — le faisceau minimal viable est
+`⌈k/f⌉`, pas `k`.
+
+**Coût après correction** (comptage exact des produits scalaires d'index,
+budget 512 tokens, f = 8) :
+
+| N | routage plat | routage hiérarchique | gain | plat / requête | hiér. / requête |
+| --- | --- | --- | --- | --- | --- |
+| 1 024 | 32 896 | 31 247 | 1.05× | 128 | 122 |
+| 4 096 | 524 800 | 212 658 | 2.47× | 512 | 208 |
+| 16 384 | 8 390 656 | 1 233 096 | 6.80× | 2 048 | 301 |
+| 32 768 | 33 558 528 | 2 869 031 | **11.70×** | 4 096 | 350 |
+
+Exposants empiriques : **N^2.00 pour le routage plat, N^1.30 pour le
+hiérarchique**. Le coût par requête du routeur plat suit exactement N (2 048 à
+N = 16 k) ; celui du hiérarchique croît en log (122 → 350 pour un facteur 32 sur
+N). Extrapolé à 1 M tokens : `3.11e10` contre `2.64e8` produits scalaires, soit
+**118×**. Autrement dit le routage passe de **5.7× le coût de l'attention** à
+**0.048×** — il cesse d'être le goulot, ce qui était tout l'enjeu.
+
+**Ce que ça coûte en qualité** (N = 2 048, budget 512 tokens, mesure par tête) :
+
+| routeur | ops | accord avec le top-k exact | masse d'attention captée |
+| --- | --- | --- | --- |
+| plat (exhaustif) | 131 328 | 100 % | 84.6 % (min 49.8 %) |
+| hiér. f=8, faisceau minimal | 81 844 | 67.6 % | **83.9 %** (min 49.2 %) |
+| hiér. f=8, faisceau 32 | 174 114 | 90.4 % | 84.6 % (min 49.8 %) |
+| hiér. f=16, faisceau minimal | 68 437 | 64.2 % | 83.0 % (min 46.9 %) |
+| hiér. f=8, résumé par max | 81 919 | 64.0 % | 83.8 % (min 49.0 %) |
+
+Le résultat important est l'écart entre les deux dernières colonnes : le
+faisceau minimal ne retrouve que **67.6 %** des blocs du top-k exact, mais
+capte **83.9 %** de la masse d'attention contre 84.6 % — soit **0.7 point de
+perte**. Les blocs qu'il rate ne pèsent presque rien. C'est exactement le genre
+d'arbitrage que le mémoire aurait dû publier : l'identité du top-k n'est pas la
+bonne métrique, la masse l'est.
+
+Le résumé par maximum ne bat pas la moyenne (83.8 % contre 83.9 % pour un coût
+identique) : l'intuition « le max borne mieux le score du sous-arbre » ne se
+vérifie pas ici. Mesuré, donc abandonné.
+
+**Vérifications** (`bench_hier.py` §4) : causalité stricte respectée à chaque
+position, budget jamais dépassé, et — test le plus utile — avec un budget égal
+au contexte entier le routeur hiérarchique redonne l'attention dense causale à
+**4.05e-08** près. Le chemin rapide et le chemin exact coïncident donc bien.
+
+Reste une limite honnête : ces mesures s'arrêtent à N = 32 768, et le facteur
+118× à 1 M est une extrapolation de lois d'échelle mesurées, pas une exécution.
+C'est précisément la distinction que ce rapport reproche au mémoire de ne pas
+faire — elle vaut aussi pour lui.
+
 ---
 
-*Toutes les valeurs de ce rapport proviennent de `experiments/attention/audit.py`.
-Journal complet : `experiments/results/attention_audit_log.txt`, données
-machine : `experiments/results/attention_audit.json`.*
+*Toutes les valeurs de ce rapport proviennent de `experiments/attention/audit.py`
+et `experiments/attention/bench_hier.py`.
+Journaux : `experiments/results/attention_audit_log.txt`,
+`experiments/results/hier_routing_log.txt`. Données machine :
+`attention_audit.json`, `hier_routing.csv` / `.json`.*
