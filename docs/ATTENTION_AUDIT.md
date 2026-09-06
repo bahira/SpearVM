@@ -292,6 +292,65 @@ puissance donnerait un exposant < 1, ce qui n'a pas de sens. La loi d'échelle
 rigoureuse reste celle du comptage d'opérations (§6), pas celle du temps de
 paroi à ces tailles.
 
+## 8. L'index hiérarchique, porté en C
+
+Le §6 proposait l'index manquant en numpy. Il est maintenant un noyau
+(`spur_kv_index_build_f32`, `spur_attention_sparse_f32`), et sa mise au point a
+produit trois résultats que le prototype ne pouvait pas donner.
+
+**Le coût** (`experiments/attention/bench_sparse.py`, budget en tokens) :
+
+| contexte | budget | lus | dense | creuse | gain | index / cache |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16 384 | 256 | 268 | 2.42 ms | 0.19 ms | **×12.8** | 9.5 % |
+| 65 536 | 256 | 268 | 11.9 ms | 0.21 ms | **×57** | 9.5 % |
+| 65 536 | 4 096 | 4 100 | 12.0 ms | 2.9 ms | ×4.1 | 9.5 % |
+
+**L'exactitude du chemin.** À budget plein, l'attention creuse doit redonner
+exactement l'attention dense : mesuré à **0 à 5.7e-08** sur trois configurations.
+C'est ce test qui sépare la plomberie (rassemblement, transposition de V,
+causalité portée par les longueurs) de la qualité du routage — et il a servi :
+il a prouvé que le chemin était exact alors que la fidélité globale semblait
+catastrophique, ce qui a orienté la recherche vers la bonne cause.
+
+**La qualité du résumé — le vrai enseignement.** Résumer un bloc par la moyenne
+de ses clés est un mauvais choix, et la mesure le quantifie : la masse
+d'attention captée par les 128 blocs retenus passe de **0.543 (moyenne seule)** à
+**0.766 (moyenne + direction principale de variation)**, pour un oracle à 0.949.
+La raison est mécanique : la masse softmax d'un bloc est dominée par son token
+de **plus fort score**, pas par la moyenne des scores. Un bloc où un seul token
+correspond fortement a une moyenne quelconque et se fait rejeter.
+
+La direction principale est obtenue par itération de puissance (8 pas) sur les
+écarts à la moyenne — pas de LAPACK, et 0.799 contre 0.817 pour une SVD
+complète. Piège rencontré : initialiser l'itération sur la *somme* des écarts
+donne un vecteur nul (elle vaut zéro par construction) ; le symptôme était un
+score strictement identique à celui de la moyenne seule.
+
+**Ce qui limite vraiment la fidélité, et ce n'est pas l'index.** La sélection
+est partagée par toutes les têtes de requêtes d'un groupe GQA. Sur ces données
+synthétiques les têtes sont indépendantes, donc elles ne veulent pas les mêmes
+tokens :
+
+| bruit inter-têtes | accord des top-512 | oracle **par tête** | routeur **partagé** |
+| --- | --- | --- | --- |
+| 0.30 | 10.2 % | **6.8e-03** | 5.7e-01 |
+| 0.15 | 32.8 % | 1.1e-01 | 9.2e-01 |
+
+Un oracle par tête atteint 7e-03 là où la sélection partagée reste à 6e-01 : ce
+n'est ni le noyau ni l'index qui limitent, c'est le **partage de la décision**.
+Dans un modèle entraîné, les têtes d'un groupe GQA sont corrélées par
+construction — mais cela ne se démontre pas sur un banc synthétique. **La mesure
+de fidélité de bout en bout n'est donc pas transportable depuis ce banc et doit
+être refaite sur un vrai modèle.** Le dire est plus utile que de publier un
+chiffre flatteur obtenu sur des données choisies.
+
+Corollaire pratique déjà mesurable : un routage par blocs ne capte que ce qui
+est structuré *au niveau du bloc*. Avec un sujet tiré au hasard token par token,
+tous les blocs ont la même moyenne et aucune sélection ne bat le hasard. Les
+données de test ont donc été refaites avec des zones thématiques contiguës —
+sans quoi le banc mesurait l'impossible.
+
 ---
 
 *Toutes les valeurs de ce rapport proviennent de `experiments/attention/audit.py`

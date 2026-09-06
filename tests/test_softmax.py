@@ -319,3 +319,72 @@ def test_quantized_weight_validation():
         sm.QuantizedWeight(np.zeros(8, dtype=np.float32))
     with pytest.raises(ValueError):
         sm.QuantizedWeight(w).matmul(np.zeros((2, 5), dtype=np.float32))
+
+
+# --- attention creuse (index hierarchique) -----------------------------------
+def _cache_struct(tk=1024, d=32, h_kv=2, run=64, seed=3):
+    rng = np.random.default_rng(seed)
+    base = rng.standard_normal((8, h_kv, d)).astype(np.float32)
+    base /= np.linalg.norm(base, axis=-1, keepdims=True)
+    idx = np.repeat(rng.integers(0, 8, size=(tk + run - 1) // run), run)[:tk]
+    k = np.ascontiguousarray(base[idx] + 0.4 * rng.standard_normal((tk, h_kv, d)),
+                             dtype=np.float32)
+    v = np.ascontiguousarray(rng.standard_normal((tk, h_kv, d)), dtype=np.float32)
+    return k, v
+
+
+@pytest.mark.parametrize("tq,bs", [(1, 4), (4, 4), (8, 8), (3, 16)])
+def test_attention_sparse_exacte_a_budget_plein(tq, bs):
+    """Budget = contexte : le chemin creux doit redonner l'attention dense.
+
+    C'est le test qui separe la plomberie (rassemblement, transposition de V,
+    causalite par longueurs) de la qualite du routage.
+    """
+    tk, d, h_q, h_kv = 1024, 32, 8, 2
+    k, v = _cache_struct(tk, d, h_kv)
+    cache = sm.KVCache(k, v).build_index(block=bs, factor=8)
+    pos = tk - 32
+    rng = np.random.default_rng(4)
+    q = np.ascontiguousarray(rng.standard_normal((tq, h_q, d)) * 3, dtype=np.float32)
+    lens = np.arange(pos + 1, pos + tq + 1, dtype=np.int32)
+    dense = cache.attend(q, lengths=lens)
+    sparse, got = cache.attend_sparse(q, pos=pos, budget=tk)
+    assert got >= pos, "a budget plein tout le prefixe visible doit etre lu"
+    assert np.abs(sparse - dense).max() / np.abs(dense).max() <= 1e-6
+
+
+def test_attention_sparse_causalite():
+    """Un token place apres la tuile ne doit jamais influencer la sortie."""
+    tk, d, h_q, h_kv, tq = 512, 32, 4, 2, 2
+    k, v = _cache_struct(tk, d, h_kv)
+    pos = 256
+    rng = np.random.default_rng(5)
+    q = np.ascontiguousarray(rng.standard_normal((tq, h_q, d)) * 3, dtype=np.float32)
+    a, _ = sm.KVCache(k, v).build_index(block=4).attend_sparse(q, pos=pos, budget=tk)
+    v2 = v.copy()
+    v2[pos + tq:] = 1e3                      # on sabote tout le futur
+    b, _ = sm.KVCache(k, v2).build_index(block=4).attend_sparse(q, pos=pos, budget=tk)
+    assert np.array_equal(a, b), "la sortie depend de tokens futurs"
+
+
+def test_attention_sparse_budget_reduit_les_lectures():
+    tk, d, h_q, h_kv = 2048, 32, 4, 2
+    k, v = _cache_struct(tk, d, h_kv)
+    cache = sm.KVCache(k, v).build_index(block=4, factor=8)
+    q = np.ascontiguousarray(np.zeros((1, h_q, d)), dtype=np.float32)
+    lus = [cache.attend_sparse(q, pos=tk - 4, budget=b)[1] for b in (128, 512, 2048)]
+    assert lus[0] < lus[1] < lus[2]
+    assert lus[0] <= 128 + 8, "le budget doit etre respecte (queue locale comprise)"
+
+
+def test_attention_sparse_index_obligatoire_et_validation():
+    k, v = _cache_struct(256, 32, 2)
+    cache = sm.KVCache(k, v)
+    q = np.zeros((1, 4, 32), dtype=np.float32)
+    with pytest.raises(ValueError):
+        cache.attend_sparse(q, pos=8)                 # index non construit
+    with pytest.raises(ValueError):
+        sm.KVCache(k, v, dtype="bf16").build_index()  # index f32 uniquement
+    cache.build_index(block=4)
+    with pytest.raises(ValueError):
+        cache.attend_sparse(q, pos=1000)              # au-dela du contexte

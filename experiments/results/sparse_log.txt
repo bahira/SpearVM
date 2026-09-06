@@ -1,0 +1,54 @@
+============================================================================================
+1. Cout : attention creuse contre attention dense, meme cache
+============================================================================================
+
+ contexte  budget    lus  dense ms creuse ms    gain  index Mo cache Mo  index %
+     4096     256    260    0.5224    0.1435    3.64     1.198     4.19    28.6 %
+     4096    1024   1028    0.5366    0.5959    0.90     1.198     4.19    28.6 %
+     4096    4096   4092    0.5234    2.1960    0.24     1.198     4.19    28.6 %
+    16384     256    260    2.2885    0.1730   13.23     4.792    16.78    28.6 %
+    16384    1024   1028    2.2475    0.9501    2.37     4.792    16.78    28.6 %
+    16384    4096   4092    2.2735    3.4332    0.66     4.792    16.78    28.6 %
+    65536     256    260   12.5510    0.2104   59.65    19.173    67.11    28.6 %
+    65536    1024   1028   13.1890    1.0292   12.81    19.173    67.11    28.6 %
+    65536    4096   4100   13.0149    4.1113    3.17    19.173    67.11    28.6 %
+
+============================================================================================
+2. Exactitude du chemin : a budget plein, le creux DOIT redonner le dense
+============================================================================================
+  contexte  2048, tuile  1 :  2033 tokens lus, ecart 5.65e-08
+  contexte  2048, tuile  4 :  2036 tokens lus, ecart 5.56e-08
+  contexte  8192, tuile  8 :  8184 tokens lus, ecart 0.00e+00
+  -> rassemblement, transposition de V, causalite par longueurs : exacts.
+
+============================================================================================
+3. Qualite du resume : quelle masse d'attention un bloc bien note capte-t-il ?
+============================================================================================
+
+  masse captee par les 128 blocs retenus (budget 512 tokens, 6 requetes) :
+                 moyenne : 0.543
+       moyenne+direction : 0.766
+                  oracle : 0.949
+  -> ajouter la direction principale de variation multiplie par ~1.8 la
+     masse captee, pour un index deux fois plus gros. La moyenne seule
+     est un mauvais resume : la masse softmax depend du MAX du bloc.
+
+============================================================================================
+4. Fidelite de la sortie : le facteur limitant n'est pas l'index
+============================================================================================
+
+ bruit inter-tetes  accord top-512  oracle par tete  routeur partage
+              0.30           10.2 %         6.83e-03         5.67e-01
+              0.15           32.8 %         1.06e-01         9.18e-01
+              0.05           75.5 %         1.70e-01         1.11e+00
+
+  Lecture : quand les tetes d'un meme groupe GQA ne veulent pas les memes
+  tokens, une selection commune ne peut satisfaire personne — un oracle
+  PAR TETE atteint 7e-03 la ou la selection partagee reste a 6e-01.
+  Ce n'est ni l'index ni le noyau qui limitent : c'est le partage de la
+  decision. Sur ces donnees synthetiques les tetes sont independantes ;
+  dans un modele entraine, les tetes d'un groupe GQA sont correlees par
+  construction. La mesure de fidelite doit donc etre refaite sur un vrai
+  modele — elle n'est PAS transportable depuis ce banc.
+
+-> results/sparse_attention.csv / .json

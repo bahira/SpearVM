@@ -1,6 +1,20 @@
 # Changelog
 
 ## non publie
+- **attention creuse en C** : l'index hierarchique de l'audit devient un noyau
+  (`spur_kv_index_build_f32`, `spur_attention_sparse_f32`, `KVCache.build_index`
+  / `.attend_sparse`). **x12.8 a 16 k de contexte, x57 a 65 k**, index = 9.5 %
+  du cache. A budget plein le chemin creux redonne l'attention dense a 5.7e-08
+  (test dedie) : la plomberie est exacte, ce qui a permis d'attribuer
+  correctement les pertes de fidelite.
+  Deux resultats de fond : (1) resumer un bloc par la MOYENNE de ses cles est un
+  mauvais choix — la masse captee passe de 0.543 a **0.766** en ajoutant la
+  direction principale de variation (iteration de puissance, sans LAPACK), car
+  la masse softmax depend du MAX du bloc ; (2) le facteur qui limite vraiment la
+  fidelite est le **partage de la decision de routage entre les tetes d'un
+  groupe GQA** — un oracle par tete atteint 7e-03 la ou le partage reste a
+  6e-01. Sur donnees synthetiques les tetes sont independantes : cette mesure
+  n'est pas transportable et doit etre refaite sur un modele entraine.
 - **`web/` — 6e cas d'usage : Attention Lab** — un bloc de decodeur SpearVM
   decode reellement token apres token (attention multi-tetes sur `KVCache`
   packe + FFN) et pousse la carte d'attention **effectivement calculee**

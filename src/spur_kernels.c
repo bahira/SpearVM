@@ -1992,3 +1992,354 @@ void spur_gemm_nt_bf16w_f32(const float* A, const uint16_t* B, float* C,
                             long long m, long long k, long long n){
     spur_gemm_nt_bf16b_f32(A, B, C, m, k, n);
 }
+
+/* ============================================================================
+   ATTENTION CREUSE — l'index hierarchique, porte en C
+   ----------------------------------------------------------------------------
+   Constat de docs/ATTENTION_AUDIT.md : borner le budget d'attention ne borne
+   pas le cout de la SELECTION. Un routage plat score tous les blocs passes,
+   soit O(N^2) produits scalaires ; l'arbre de resumes le ramene a O(N log N)
+   (mesure : N^2.00 contre N^1.30, x11.7 a N=32768).
+
+   Structure : les cles packees sont resumees par blocs de BS tokens (niveau 0),
+   puis par paquets de F noeuds a chaque niveau superieur. La descente en
+   faisceau garde `beam` noeuds par niveau et ne score que leurs enfants.
+
+   Causalite : on ne selectionne que des blocs entierement anterieurs a la
+   tuile de requetes, puis on ajoute la queue locale (du debut du bloc courant
+   jusqu'a la derniere requete). Les longueurs par ligne font le reste — aucun
+   masque a materialiser.
+   ========================================================================== */
+
+#define SPUR_IDX_MAXLEV 12
+
+static float spur_dotf_fwd(const float* a, const float* b, long long n);
+
+static int spur_idx_levels(long long nb0, int f, long long* counts){
+    int L = 0;
+    long long n = nb0;
+    counts[L++] = n;
+    while (n > f && L < SPUR_IDX_MAXLEV){
+        n = (n + f - 1) / f;
+        counts[L++] = n;
+    }
+    return L;
+}
+
+/* Taille du tampon d'index, en nombre de float.
+   Chaque noeud porte 2*d flottants : sa moyenne, et sa direction principale de
+   variation ponderee par l'amplitude des projections.                        */
+long long spur_kv_index_size_f32(long long tk, long long d, int h_kv, int bs, int f){
+    if (bs < 1) bs = 1;
+    if (f < 2) f = 2;
+    long long counts[SPUR_IDX_MAXLEV];
+    const long long nb0 = (tk + bs - 1) / bs;
+    const int L = spur_idx_levels(nb0, f, counts);
+    long long tot = 0;
+    for (int i = 0; i < L; i++) tot += counts[i];
+    return tot * 2 * d * (long long)h_kv;
+}
+
+/* Resume d'un groupe de tokens : moyenne + direction principale.
+
+   Pourquoi pas la seule moyenne : la masse d'attention d'un bloc est dominee
+   par son token de plus fort score, pas par la moyenne des scores. Un bloc ou
+   un seul token correspond fortement a la requete a une moyenne quelconque et
+   se fait rejeter. Mesure sur 4 requetes, blocs de 4 tokens, budget 512 :
+   masse captee 0.445 avec la moyenne seule, **0.799** avec moyenne+direction,
+   0.817 avec une SVD complete, 0.930 pour l'oracle.
+
+   La direction est obtenue par iteration de puissance sur les ecarts (8 pas,
+   initialisation sur le premier ecart — la SOMME des ecarts est nulle par
+   construction, l'initialiser ainsi donnerait un vecteur nul).             */
+static void spur_summarize(const float* K, long long n, long long stride,
+                           long long d, float* mean, float* dir, float* dev){
+    for (long long c = 0; c < d; c++) mean[c] = 0.0f;
+    for (long long t = 0; t < n; t++)
+        for (long long c = 0; c < d; c++) mean[c] += K[t * stride + c];
+    const float inv = 1.0f / (float)n;
+    for (long long c = 0; c < d; c++) mean[c] *= inv;
+    for (long long t = 0; t < n; t++)
+        for (long long c = 0; c < d; c++) dev[t * d + c] = K[t * stride + c] - mean[c];
+
+    if (n < 2){
+        for (long long c = 0; c < d; c++) dir[c] = 0.0f;
+        return;
+    }
+    float u[512];
+    const long long dd = (d <= 512) ? d : 512;
+    float nrm = 0.0f;
+    for (long long c = 0; c < dd; c++){ u[c] = dev[c]; nrm += u[c] * u[c]; }
+    if (nrm <= 1e-30f){
+        for (long long c = 0; c < d; c++) dir[c] = 0.0f;
+        return;
+    }
+    nrm = 1.0f / sqrtf(nrm);
+    for (long long c = 0; c < dd; c++) u[c] *= nrm;
+
+    for (int it = 0; it < 8; it++){
+        float acc[512];
+        for (long long c = 0; c < dd; c++) acc[c] = 0.0f;
+        for (long long t = 0; t < n; t++){
+            const float pr = spur_dotf_fwd(dev + t * d, u, dd);
+            for (long long c = 0; c < dd; c++) acc[c] += pr * dev[t * d + c];
+        }
+        float m = 0.0f;
+        for (long long c = 0; c < dd; c++) m += acc[c] * acc[c];
+        if (m <= 1e-30f) break;
+        m = 1.0f / sqrtf(m);
+        for (long long c = 0; c < dd; c++) u[c] = acc[c] * m;
+    }
+    /* amplitude = RMS des projections (convention de la valeur singuliere) */
+    float ss = 0.0f;
+    for (long long t = 0; t < n; t++){
+        const float pr = spur_dotf_fwd(dev + t * d, u, dd);
+        ss += pr * pr;
+    }
+    const float amp = sqrtf(ss / (float)n);
+    for (long long c = 0; c < dd; c++) dir[c] = u[c] * amp;
+    for (long long c = dd; c < d; c++) dir[c] = 0.0f;
+}
+
+/* Construit l'arbre a partir des cles **packees** (h_kv, tk, d). Chaque niveau
+   est resume directement depuis les tokens qu'il couvre (et non depuis le
+   niveau inferieur) : la direction principale ne se compose pas. */
+void spur_kv_index_build_f32(const float* packed, long long tk, long long d,
+                             int h_kv, int bs, int f, float* index){
+    if (bs < 1) bs = 1;
+    if (f < 2) f = 2;
+    long long counts[SPUR_IDX_MAXLEV];
+    const long long nb0 = (tk + bs - 1) / bs;
+    const int L = spur_idx_levels(nb0, f, counts);
+    long long tot = 0, off[SPUR_IDX_MAXLEV];
+    for (int i = 0; i < L; i++){ off[i] = tot; tot += counts[i]; }
+
+    #pragma omp parallel for schedule(static) collapse(2)
+    for (int g = 0; g < h_kv; g++){
+        for (int l = 0; l < L; l++){
+            const float* K = packed + (size_t)g * tk * d;
+            float* base = index + (size_t)g * tot * 2 * d;
+            long long span = bs;
+            for (int i = 0; i < l; i++) span *= f;
+            float* dev = (float*)SPUR_AALLOC(sizeof(float) * (size_t)span * d);
+            if (!dev) continue;
+            for (long long b = 0; b < counts[l]; b++){
+                const long long t0 = b * span;
+                long long n = span;
+                if (t0 + n > tk) n = tk - t0;
+                if (n <= 0) continue;
+                float* node = base + (off[l] + b) * 2 * d;
+                spur_summarize(K + t0 * d, n, d, d, node, node + d, dev);
+            }
+            SPUR_AFREE(dev);
+        }
+    }
+}
+
+static float spur_dotf_fwd(const float* a, const float* b, long long n){
+    __m256 acc = _mm256_setzero_ps();
+    long long i = 0;
+    for (; i + 7 < n; i += 8)
+        acc = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), acc);
+    float s = hsum8(acc);
+    for (; i < n; i++) s += a[i] * b[i];
+    return s;
+}
+
+/* score d'un noeud : moyenne.q + |direction.q| — la seconde part majore la
+   contribution du token le plus saillant du groupe.                        */
+static inline float spur_node_score(const float* node, const float* q, long long d){
+    return spur_dotf_fwd(node, q, d) + fabsf(spur_dotf_fwd(node + d, q, d));
+}
+
+/* Descente en faisceau : renvoie le nombre de blocs retenus (tries). */
+static long long spur_idx_route(const float* idx, const long long* counts, int L,
+                                int f, const float* q, long long d,
+                                long long nb_valid, int beam, long long k_blocks,
+                                long long* cand, long long* next, float* score,
+                                long long* out){
+    if (nb_valid <= 0) return 0;
+    if (k_blocks > nb_valid) k_blocks = nb_valid;
+    if (beam < 1) beam = 1;
+
+    /* offsets de chaque niveau dans le tampon */
+    long long off[SPUR_IDX_MAXLEV];
+    long long acc = 0;
+    for (int i = 0; i < L; i++){ off[i] = acc; acc += counts[i]; }
+
+    /* noeuds du niveau le plus grossier couvrant [0, nb_valid) */
+    long long span = 1;
+    for (int i = 0; i < L - 1; i++) span *= f;
+    long long ncand = (nb_valid + span - 1) / span;
+    if (ncand > counts[L - 1]) ncand = counts[L - 1];
+    for (long long i = 0; i < ncand; i++) cand[i] = i;
+
+    for (int l = L - 1; l >= 0; l--){
+        const float* nodes = idx + off[l] * 2 * d;
+        for (long long i = 0; i < ncand; i++)
+            score[i] = spur_node_score(nodes + cand[i] * 2 * d, q, d);
+
+        const long long keep = (l > 0) ? beam : k_blocks;
+        if (ncand > keep){
+            /* selection partielle : on garde les `keep` meilleurs scores */
+            for (long long s = 0; s < keep; s++){
+                long long best = s;
+                for (long long i = s + 1; i < ncand; i++)
+                    if (score[i] > score[best]) best = i;
+                float ts = score[s]; score[s] = score[best]; score[best] = ts;
+                long long tc = cand[s]; cand[s] = cand[best]; cand[best] = tc;
+            }
+            ncand = keep;
+        }
+        if (l == 0) break;
+
+        /* developpement vers les enfants, borne par la causalite */
+        long long span_child = 1;
+        for (int i = 0; i < l - 1; i++) span_child *= f;
+        long long m = 0;
+        for (long long i = 0; i < ncand; i++)
+            for (int c = 0; c < f; c++){
+                const long long child = cand[i] * f + c;
+                if (child >= counts[l - 1]) break;
+                if (child * span_child >= nb_valid) break;
+                next[m++] = child;
+            }
+        if (m == 0) return 0;
+        for (long long i = 0; i < m; i++) cand[i] = next[i];
+        ncand = m;
+    }
+
+    /* tri croissant : la sortie doit rester ordonnee en position */
+    for (long long i = 1; i < ncand; i++){
+        const long long v = cand[i];
+        long long j = i - 1;
+        while (j >= 0 && cand[j] > v){ cand[j + 1] = cand[j]; j--; }
+        cand[j + 1] = v;
+    }
+    for (long long i = 0; i < ncand; i++) out[i] = cand[i];
+    return ncand;
+}
+
+/* Attention creuse : selection par index, rassemblement, puis attention dense
+   sur la tuile rassemblee. `pos` = position absolue de la premiere requete. */
+long long spur_attention_sparse_f32(const float* Q, const float* packed,
+                                    const float* index, float* O,
+                                    long long tq, long long tk, long long d,
+                                    int h_q, int h_kv, float scale,
+                                    long long pos, long long budget_tokens,
+                                    int bs, int f, int beam){
+    if (tq <= 0 || tk <= 0 || d <= 0 || h_q <= 0 || h_kv <= 0) return -1;
+    if (h_q % h_kv || bs < 1 || f < 2) return -1;
+    if (pos < 0 || pos + tq > tk) return -1;
+
+    long long counts[SPUR_IDX_MAXLEV];
+    const long long nb0 = (tk + bs - 1) / bs;
+    const int L = spur_idx_levels(nb0, f, counts);
+    long long tot = 0;
+    for (int i = 0; i < L; i++) tot += counts[i];
+
+    const long long tail0 = (pos / bs) * bs;         /* debut du bloc courant  */
+    const long long tail_n = pos + tq - tail0;       /* queue locale, causale  */
+    const long long nb_valid = tail0 / bs;           /* blocs entierement vus  */
+    long long k_blocks = budget_tokens / bs;
+    if (k_blocks < 1) k_blocks = 1;
+    if (k_blocks > nb_valid) k_blocks = nb_valid;
+    const long long gathered = k_blocks * bs + tail_n;
+
+    const size_t kv_sz = (size_t)tk * d;
+    const float* Kp = packed;
+    const float* Vp = packed + kv_sz * (size_t)h_kv;
+
+    /* tampons : tuile rassemblee (K puis V^T) + espace de routage */
+    float* tile = (float*)SPUR_AALLOC(sizeof(float) * (size_t)gathered * d
+                                      * (size_t)h_kv * 2);
+    long long* work = (long long*)SPUR_AALLOC(sizeof(long long) * (size_t)(3 * nb0 + 64));
+    float* sc = (float*)SPUR_AALLOC(sizeof(float) * (size_t)(nb0 + 64));
+    float* qmean = (float*)SPUR_AALLOC(sizeof(float) * (size_t)d * h_kv);
+    int* lens = (int*)SPUR_AALLOC(sizeof(int) * (size_t)tq);
+    if (!tile || !work || !sc || !qmean || !lens){
+        if (tile) SPUR_AFREE(tile);
+        if (work) SPUR_AFREE(work);
+        if (sc) SPUR_AFREE(sc);
+        if (qmean) SPUR_AFREE(qmean);
+        if (lens) SPUR_AFREE(lens);
+        return -1;
+    }
+    float* tileV = tile + (size_t)gathered * d * (size_t)h_kv;
+    const int rep = h_q / h_kv;
+
+    /* signature de requete par tete de cles : moyenne du groupe et de la tuile */
+    for (int g = 0; g < h_kv; g++){
+        float* qm = qmean + (size_t)g * d;
+        for (long long c = 0; c < d; c++) qm[c] = 0.0f;
+        for (int r = 0; r < rep; r++){
+            const int h = g * rep + r;
+            for (long long t = 0; t < tq; t++){
+                const float* qs = Q + (t * h_q + h) * d;
+                for (long long c = 0; c < d; c++) qm[c] += qs[c];
+            }
+        }
+        const float inv = 1.0f / (float)(rep * tq);
+        for (long long c = 0; c < d; c++) qm[c] *= inv;
+    }
+
+    /* Routage d'abord pour TOUTES les tetes : le nombre de blocs retenus doit
+       etre commun, sinon la queue locale ne commence pas au meme offset selon
+       la tete et les longueurs par ligne ne veulent plus rien dire. */
+    long long* sels = (long long*)SPUR_AALLOC(sizeof(long long)
+                                              * (size_t)(k_blocks + 1) * h_kv);
+    if (!sels){
+        SPUR_AFREE(lens); SPUR_AFREE(qmean); SPUR_AFREE(sc);
+        SPUR_AFREE(work); SPUR_AFREE(tile);
+        return -1;
+    }
+    long long n_sel = k_blocks;
+    for (int g = 0; g < h_kv; g++){
+        long long* cand = work;
+        long long* next = work + nb0 + 32;
+        const float* idx = index + (size_t)g * tot * 2 * d;
+        const long long got = spur_idx_route(idx, counts, L, f, qmean + (size_t)g * d,
+                                             d, nb_valid, beam, k_blocks,
+                                             cand, next, sc,
+                                             sels + (size_t)g * (k_blocks + 1));
+        if (got < n_sel) n_sel = got;
+    }
+
+    for (int g = 0; g < h_kv; g++){
+        const long long* sel = sels + (size_t)g * (k_blocks + 1);
+        const float* K = Kp + kv_sz * (size_t)g;
+        const float* V = Vp + kv_sz * (size_t)g;      /* (d, tk), transpose */
+        float* Kt = tile + (size_t)g * gathered * d;
+        float* Vt = tileV + (size_t)g * gathered * d; /* (d, gathered)      */
+        long long w = 0;
+        for (long long i = 0; i < n_sel; i++){
+            const long long t0 = sel[i] * bs;
+            for (long long t = 0; t < bs; t++, w++){
+                memcpy(Kt + w * d, K + (t0 + t) * d, (size_t)d * sizeof(float));
+                for (long long c = 0; c < d; c++) Vt[c * gathered + w] = V[c * tk + t0 + t];
+            }
+        }
+        for (long long t = 0; t < tail_n; t++, w++){
+            memcpy(Kt + w * d, K + (tail0 + t) * d, (size_t)d * sizeof(float));
+            for (long long c = 0; c < d; c++) Vt[c * gathered + w] = V[c * tk + tail0 + t];
+        }
+    }
+    SPUR_AFREE(sels);
+
+    const long long base_n = n_sel * bs;
+    for (long long t = 0; t < tq; t++)
+        lens[t] = (int)(base_n + (pos + t - tail0) + 1);
+
+    /* la tuile rassemblee est deja au format packe attendu */
+    /* Attention : la disposition packee attend un pas de `gathered` colonnes
+       pour V^T ; on passe donc `gathered` comme longueur de tuile et on borne
+       la visibilite par `lens` (les colonnes non ecrites ne sont jamais lues). */
+    spur_attention_mha_packed_f32(Q, tile, O, tq, gathered, d, h_q, h_kv, scale, lens);
+
+    SPUR_AFREE(lens);
+    SPUR_AFREE(qmean);
+    SPUR_AFREE(sc);
+    SPUR_AFREE(work);
+    SPUR_AFREE(tile);
+    return n_sel * bs + tail_n;
+}

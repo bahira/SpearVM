@@ -390,6 +390,23 @@ class QuantizedWeight:
         return y
 
 
+_kv_index_size = _dll.spur_kv_index_size_f32
+_kv_index_size.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+                           ctypes.c_int, ctypes.c_int]
+_kv_index_size.restype = ctypes.c_longlong
+_kv_index_build = _dll.spur_kv_index_build_f32
+_kv_index_build.argtypes = [_PF_, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_int, _PF_]
+_kv_index_build.restype = None
+_attention_sparse = _dll.spur_attention_sparse_f32
+_attention_sparse.argtypes = [_PF_, _PF_, _PF_, _PF_, ctypes.c_longlong,
+                              ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_float, ctypes.c_longlong,
+                              ctypes.c_longlong, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int]
+_attention_sparse.restype = ctypes.c_longlong
+
+
 class KVCache:
     """Cache K/V packe une fois, reutilisable par des dizaines de tuiles.
 
@@ -401,7 +418,7 @@ class KVCache:
         out = cache.attend(q, lengths=L)  # q : (tq, H_q, d)
     """
 
-    __slots__ = ("tk", "d", "h_kv", "dtype", "_buf")
+    __slots__ = ("tk", "d", "h_kv", "dtype", "_buf", "_index", "_bs", "_f")
 
     def __init__(self, k, v, dtype="f32"):
         """`dtype` : "f32" ou "bf16" (empreinte divisee par deux)."""
@@ -414,6 +431,9 @@ class KVCache:
             raise ValueError(f"dtype attendu 'f32' ou 'bf16', recu {dtype!r}")
         self.tk, self.h_kv, self.d = k.shape
         self.dtype = dtype
+        self._index = None
+        self._bs = 0
+        self._f = 0
         if dtype == "bf16":
             n = int(_kv_pack_size_bf16(self.tk, self.d, self.h_kv))
             self._buf = np.empty(n, dtype=np.uint16)
@@ -428,6 +448,54 @@ class KVCache:
     @property
     def nbytes(self):
         return self._buf.nbytes
+
+    def build_index(self, block=8, factor=8):
+        """Construit l'arbre de resumes qui rend le routage sous-quadratique.
+
+        `block` : tokens par bloc (granularite de selection) ;
+        `factor` : arite de l'arbre. Cout : ~1/block du cache en memoire.
+        """
+        if self.dtype != "f32":
+            raise ValueError("l'index n'est disponible que pour un cache f32")
+        n = int(_kv_index_size(self.tk, self.d, self.h_kv, block, factor))
+        self._index = np.empty(n, dtype=np.float32)
+        self._bs, self._f = int(block), int(factor)
+        _kv_index_build(self._buf.ctypes.data_as(_PF_), self.tk, self.d,
+                        self.h_kv, self._bs, self._f,
+                        self._index.ctypes.data_as(_PF_))
+        return self
+
+    def attend_sparse(self, q, pos, budget=512, beam=0, scale=None, out=None):
+        """Attention creuse : seuls les blocs les mieux notes sont lus.
+
+        `pos` : position absolue de la premiere requete de la tuile. Les blocs
+        entierement anterieurs a la tuile sont candidats a la selection ; la
+        queue locale (du debut du bloc courant a la derniere requete) est
+        toujours incluse, et la causalite est portee par les longueurs.
+
+        Renvoie (sortie, tokens_lus).
+        """
+        if getattr(self, "_index", None) is None:
+            raise ValueError("appeler build_index() avant attend_sparse()")
+        q = np.ascontiguousarray(q, dtype=np.float32)
+        if q.ndim != 3 or q.shape[2] != self.d:
+            raise ValueError(f"q attendu (tq, H_q, {self.d}), recu {q.shape}")
+        tq, h_q, d = q.shape
+        if h_q % self.h_kv:
+            raise ValueError(f"H_q={h_q} n'est pas un multiple de H_kv={self.h_kv}")
+        o = np.empty((tq, h_q, d), dtype=np.float32) if out is None else out
+        if o.shape != (tq, h_q, d) or o.dtype != np.float32 or not o.flags["C_CONTIGUOUS"]:
+            raise ValueError("out doit etre (tq,H_q,d) float32 C-contigu")
+        if beam <= 0:
+            beam = max(-(-(budget // self._bs) // self._f), 8)
+        got = _attention_sparse(q.ctypes.data_as(_PF_), self._buf.ctypes.data_as(_PF_),
+                                self._index.ctypes.data_as(_PF_), o.ctypes.data_as(_PF_),
+                                tq, self.tk, d, h_q, self.h_kv,
+                                float(1.0 / np.sqrt(d)) if scale is None else float(scale),
+                                int(pos), int(budget), self._bs, self._f, int(beam))
+        if got < 0:
+            raise ValueError("parametres d'attention creuse invalides")
+        return o, int(got)
 
     def attend(self, q, scale=None, lengths=None, out=None):
         q = np.ascontiguousarray(q, dtype=np.float32)
