@@ -133,16 +133,25 @@ def ref_sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=np.float64)))
 
 
-def _np_matmul_nt(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _np_matmul_nt(a: np.ndarray, b: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     dt = np.float32 if np.asarray(a).dtype == np.float32 else np.float64
-    return np.ascontiguousarray(np.asarray(a, dtype=dt) @ np.asarray(b, dtype=dt).T)
+    res = np.ascontiguousarray(np.asarray(a, dtype=dt) @ np.asarray(b, dtype=dt).T)
+    if out is None:
+        return res
+    out[...] = res           # meme signature que le backend natif (`out=`)
+    return out
 
 
-def _np_matmul_nt_gelu(a: np.ndarray, b: np.ndarray, bias: np.ndarray | None = None) -> np.ndarray:
-    out = _np_matmul_nt(a, b)
+def _np_matmul_nt_gelu(a: np.ndarray, b: np.ndarray, bias: np.ndarray | None = None,
+                       out: np.ndarray | None = None) -> np.ndarray:
+    res = _np_matmul_nt(a, b)
     if bias is not None:
-        out = out + np.asarray(bias, dtype=out.dtype)
-    return np.asarray(ref_gelu(out), dtype=out.dtype)
+        res = res + np.asarray(bias, dtype=res.dtype)
+    res = np.asarray(ref_gelu(res), dtype=res.dtype)
+    if out is None:
+        return res
+    out[...] = res
+    return out
 
 
 def _np_gelu_backward(dY: np.ndarray, x: np.ndarray) -> np.ndarray:

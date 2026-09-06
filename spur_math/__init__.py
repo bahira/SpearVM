@@ -146,14 +146,37 @@ _tanh_backward = _dll.spur_batch_tanh_backward
 _sigmoid_backward = _dll.spur_batch_sigmoid_backward
 
 
-def matmul_nt(a, b):
-    """C = A . B^T. a:(m,k), b:(n,k) -> (m,n). float32 ou float64."""
+def _dest(m, n, dt, out):
+    """Tampon de sortie : fourni par l'appelant, sinon alloue *sans* mise a zero.
+
+    Les noyaux ecrivent chaque case de C (verifie par tests/test_matmul_v2.py :
+    C pre-rempli de NaN, aucun NaN ne survit), donc `np.empty` suffit — cela
+    evite un memset de m*n elements a chaque appel. Le parametre `out=` permet
+    en plus de reutiliser un tampon dans une boucle d'inference : sur une
+    couche (64000, 64) l'allocation seule coutait plus cher que le calcul.
+    """
+    if out is None:
+        return np.empty((m, n), dtype=dt)
+    if out.shape != (m, n):
+        raise ValueError(f"out attendu de forme {(m, n)}, recu {out.shape}")
+    if out.dtype != dt:
+        raise ValueError(f"out attendu en {np.dtype(dt).name}, recu {out.dtype.name}")
+    if not out.flags["C_CONTIGUOUS"]:
+        raise ValueError("out doit etre C-contigu")
+    return out
+
+
+def matmul_nt(a, b, out=None):
+    """C = A . B^T. a:(m,k), b:(n,k) -> (m,n). float32 ou float64.
+
+    `out` : tampon (m,n) reutilisable, meme dtype et C-contigu (optionnel).
+    """
     dt = np.float32 if np.asarray(a).dtype == np.float32 else np.float64
     a = np.ascontiguousarray(a, dtype=dt)
     b = np.ascontiguousarray(b, dtype=dt)
     m, k = a.shape
     n = b.shape[0]
-    c = np.zeros((m, n), dtype=dt)
+    c = _dest(m, n, dt, out)
     if dt == np.float32:
         _matmul_nt_f32(a.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                        b.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -167,14 +190,17 @@ def matmul_nt(a, b):
     return c
 
 
-def matmul_nt_gelu(a, b, bias=None):
-    """C = gelu(A . B^T + bias) fusionne. float32 ou float64. bias:(n,) ou None."""
+def matmul_nt_gelu(a, b, bias=None, out=None):
+    """C = gelu(A . B^T + bias). float32 ou float64. bias:(n,) ou None.
+
+    `out` : tampon (m,n) reutilisable, meme dtype et C-contigu (optionnel).
+    """
     dt = np.float32 if np.asarray(a).dtype == np.float32 else np.float64
     a = np.ascontiguousarray(a, dtype=dt)
     b = np.ascontiguousarray(b, dtype=dt)
     m, k = a.shape
     n = b.shape[0]
-    c = np.zeros((m, n), dtype=dt)
+    c = _dest(m, n, dt, out)
     bp = None
     if bias is not None:
         bias = np.ascontiguousarray(bias, dtype=dt)

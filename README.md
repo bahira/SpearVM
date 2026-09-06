@@ -120,7 +120,7 @@ gcc -O3 -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn
 OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
 ```
 
-## Simulation Lab — 4 cas d'usage Three.js (`web/`)
+## Simulation Lab — 5 cas d'usage Three.js (`web/`)
 
 Démos temps réel **prêtes pour la production** où la physique est calculée par
 les noyaux SIMD et le rendu par le GPU : serveur FastAPI + WebSocket binaire,
@@ -129,9 +129,15 @@ client Vite/TypeScript/Three.js.
 | Cas d'usage | Noyaux SpearVM | Rendu |
 |---|---|---|
 | **Champ de flux neuronal** | `matmul_nt_gelu` ×2 couches sur une grille 3D → potentiel vecteur, `rot`, `tanh` | 16 k→262 k particules advectées en ping-pong GPU dans une texture 3D |
+| **Champ implicite neuronal** | MLP par voxel (`matmul_nt_gelu`, k=14) → distance signée 1-lipschitzienne | sphere tracing GPU d'une texture 3D — aucune géométrie transmise |
 | **Membrane non linéaire** | équation des ondes + saturation `tanh` par sous-pas | maillage déplacé depuis une texture R32F, 1 vertex = 1 cellule |
 | **Entraînement live** | `matmul_nt` + `gelu`, `gelu_backward` + `matmul_backward`, Adam | surface prédite colorée par l'erreur + cible filaire + courbe de perte |
 | **Kernel Lab** | banc d'essai : débit vs numpy, erreur vs IEEE, GFLOPS, gradcheck | barres 3D et courbes d'erreur log |
+
+Gain apporté par les noyaux v2, mesuré frame par frame sur ces scènes
+(`experiments/bench_sims.py`, 2 threads) : champ implicite 48³ **×3.00**
+(49.9 → 16.7 ms), champ de flux 24³ **×2.84**, entraînement live ×1.52,
+membrane ×1.0 (aucun matmul — rien à gagner, et c'est mesuré aussi).
 
 ```bash
 make web-install     # venv + noyaux + npm install

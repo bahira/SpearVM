@@ -18,7 +18,10 @@ Rien n'est retenu sans mesure ; le journal complet et les conclusions sont dans
 | `sweep_smalltile.py` | seuil en k de la branche « petite tuile » |
 | `verify_port.py` | A/B du noyau porté contre le legacy et numpy (tables du README) |
 | `verify_gelu_fused.py` | A/B du chemin GEMM+GELU |
+| `sweep_tall.py` | régime « haut et mince » (m = grid³, k court) + effet du découpage en paquets |
 | `bench_mlp.py` | impact bout-en-bout sur une itération d'entraînement |
+| `bench_sims.py` | impact frame par frame sur les cinq scènes du Simulation Lab |
+| `preview_sdf.py` | ré-implémentation numpy du shader de sphere tracing → PNG de contrôle |
 | `smoke.py` | test rapide de 2 variantes (sanité du harnais) |
 
 ```bash

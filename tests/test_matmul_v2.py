@@ -147,3 +147,39 @@ def test_matmul_nt_gelu_matches_legacy(dtype, tol):
            bias.ctypes.data_as(ctypes.c_void_p), old.ctypes.data_as(p), m, k, n)
         new = sm.matmul_nt_gelu(a, b, bias)
         assert _rel_err(new, old.astype(np.float64)) <= tol
+
+
+# --- API `out=` (reutilisation de tampon) -----------------------------------
+@pytest.mark.parametrize("dtype,tol", [(np.float64, 1e-13), (np.float32, 5e-6)])
+def test_out_reutilise_le_tampon(dtype, tol):
+    rng = np.random.default_rng(17)
+    a = np.ascontiguousarray(rng.standard_normal((97, 129)), dtype=dtype)
+    b = np.ascontiguousarray(rng.standard_normal((65, 129)), dtype=dtype)
+    ref = a.astype(np.float64) @ b.astype(np.float64).T
+
+    buf = np.full((97, 65), np.nan, dtype=dtype)
+    got = sm.matmul_nt(a, b, out=buf)
+    assert got is buf, "out= doit ecrire dans le tampon fourni, pas en allouer un"
+    assert np.isfinite(buf).all()
+    assert _rel_err(buf, ref) <= tol
+
+    # deuxieme appel dans le meme tampon : aucun residu de l'appel precedent
+    a2 = np.ascontiguousarray(rng.standard_normal((97, 129)), dtype=dtype)
+    sm.matmul_nt(a2, b, out=buf)
+    assert _rel_err(buf, a2.astype(np.float64) @ b.astype(np.float64).T) <= tol
+
+    bias = np.ascontiguousarray(rng.standard_normal(65), dtype=dtype)
+    out2 = np.full((97, 65), np.nan, dtype=dtype)
+    sm.matmul_nt_gelu(a, b, bias, out=out2)
+    assert _rel_err(out2, _gelu_ref(ref + bias.astype(np.float64))) <= tol
+
+
+def test_out_rejette_les_tampons_invalides():
+    a = np.zeros((8, 4)), np.zeros((6, 4))
+    x, y = a
+    with pytest.raises(ValueError):
+        sm.matmul_nt(x, y, out=np.zeros((8, 5)))            # mauvaise forme
+    with pytest.raises(ValueError):
+        sm.matmul_nt(x, y, out=np.zeros((8, 6), dtype=np.float32))  # mauvais dtype
+    with pytest.raises(ValueError):
+        sm.matmul_nt(x, y, out=np.zeros((6, 8)).T)          # non C-contigu

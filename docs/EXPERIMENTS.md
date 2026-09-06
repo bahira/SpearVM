@@ -246,7 +246,93 @@ complets via l'API publique, deux processus (`SPUR_MM_LEGACY=1` vs v2) :
 * **Mélanger numpy et les noyaux C dans la même course de mesure** : produit des
   écarts fantômes de ±25 % sur les formes courtes (§0).
 
-## 12. Reproduire
+## 12. Un nouveau cas d'usage révèle un régime non couvert
+
+Le cinquième cas d'usage du Simulation Lab (champ implicite : un MLP évalué
+**par voxel**, puis sphere tracing GPU) produit des GEMM que la calibration
+initiale n'avait jamais vus : `m = grid³` (des dizaines de milliers de lignes),
+`k = 14`, `n = 64`. La grille du §6 montait à m = 512.
+
+Première mesure du pipeline complet : **56 ms** par frame pour 647 MFLOP, soit
+11 GFLOPS — quatre fois moins que ce que le noyau sait faire. Trois causes,
+mesurées séparément (`experiments/sweep_tall.py`) :
+
+**(a) l'allocation dominait le calcul.** `matmul_nt` allouait sa sortie avec
+`np.zeros` : pour une couche `(64000, 64)` cela fait 16 Mo de `mmap` + memset
+**à chaque appel**, plus cher que le GEMM lui-même. Deux corrections :
+
+* la sortie est maintenant allouée avec `np.empty` — les noyaux écrivent
+  chaque case de C, ce que `tests/test_matmul_v2.py` vérifie (pré-remplissage
+  NaN) ;
+* nouveau paramètre **`out=`** sur `matmul_nt` et `matmul_nt_gelu`, pour
+  réutiliser un tampon dans une boucle d'inférence.
+
+**(b) les activations intermédiaires ne tenaient pas en cache.** Évaluer les
+64 000 points d'un coup fait transiter 16 Mo par couche en RAM. En traitant des
+paquets de lignes, tout reste en L2 :
+
+| paquets | entier | 1024 | 2048 | 4096 | 8192 | 16384 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ms | 12.8 | 10.7 | 9.5 | 9.4 | **8.7** | 8.6 |
+| GFLOPS | 50.5 | 60.6 | 67.9 | 69.0 | **74.6** | 75.4 |
+
+**(c) le régime « haut et mince » lui-même.** 90 formes mesurées
+(`results/tall.csv`, f32, 2 threads), rapport au noyau legacy :
+
+| m | k | n | legacy | pack | dot | gagnant |
+| --- | --- | --- | --- | --- | --- | --- |
+| 64000 | 14 | 64 | 13.6 | **64.5** | 14.0 | pack ×4.76 |
+| 64000 | 14 | 96 | 13.6 | **70.7** | 13.0 | pack ×5.20 |
+| 64000 | 32 | 64 | 38.3 | **94.8** | 46.2 | pack ×2.48 |
+| 64000 | 64 | 96 | 54.1 | **144.1** | 65.0 | pack ×2.66 |
+| 64000 | k | 1 | **9–25** | 3–4 | 6–14 | legacy (l'aiguillage y renvoie déjà) |
+
+L'aiguillage existant faisait déjà les bons choix sur ce régime — il n'a pas eu
+besoin d'être touché. Le facteur 4 manquant était entièrement du côté Python.
+
+Résultat sur la simulation : **56 ms → 9 ms** par frame à 40³/hidden 64.
+
+## 13. Impact des noyaux sur les cas d'usage réels
+
+`experiments/bench_sims.py` chronomètre `step()` de chaque simulation du Lab,
+en deux processus (`SPUR_MM_LEGACY=1` vs v2). C'est le temps qui décide du
+nombre d'images par seconde, pas les GFLOPS d'un GEMM carré.
+
+| Cas (2 threads) | legacy | v2 | gain | fps v2 |
+| --- | --- | --- | --- | --- |
+| champ implicite 48³ / hidden 64 | 49.95 ms | **16.67 ms** | **×3.00** | 60 |
+| champ implicite 56³ / hidden 128 | 177.7 ms | **60.3 ms** | ×2.95 | 17 |
+| champ de flux 24³ / hidden 64 | 7.25 ms | **2.55 ms** | ×2.84 | 392 |
+| champ de flux 32³ / hidden 128 | 32.5 ms | **18.4 ms** | ×1.77 | 55 |
+| entraînement live (batch 2048) | 19.6 ms | **12.9 ms** | ×1.52 | 77 |
+| membrane 160² (aucun matmul) | 0.73 ms | 0.95 ms | ×0.77 | 1050 |
+
+La dernière ligne est là exprès : la membrane est un stencil sans GEMM, elle ne
+peut rien gagner, et son écart (0.7 ms) est sous la résolution de la mesure.
+Une campagne d'optimisation honnête publie aussi les cas où elle ne sert à rien.
+
+## 14. Vérifier un shader sans navigateur
+
+Le rendu du champ implicite est du sphere tracing GLSL : impossible à compiler
+dans cet environnement (pas de navigateur, Playwright indisponible). Plutôt que
+de livrer à l'aveugle, `experiments/preview_sdf.py` **ré-implémente le shader en
+numpy** — mêmes conventions de domaine, même interpolation trilinéaire, même
+avance `t += max(d, 0.75·voxel)`, mêmes normales par différences centrées — et
+écrit un PNG (encodeur PNG minimal, aucune dépendance ajoutée).
+
+Ce rendu prouve trois choses que le navigateur montrerait : la convention de
+signe, la marchabilité du champ (les rayons trouvent la surface), et le fait que
+la borne de Lipschitz suffit (aucun pas ne traverse la surface). Il a d'ailleurs
+servi à corriger un défaut visuel réel : la sculpture était écrasée parce que je
+normalisais le déplacement par le **maximum** du gradient — un seul pic isolé
+suffisait à annuler l'amplitude. Remplacé par un quantile à 99.5 %, le
+garde-fou exact restant appliqué à la fin.
+
+Les mêmes propriétés sont testées côté serveur (`web/server/tests/test_implicit.py`) :
+|grad d| ≤ 1, intérieur négatif, et un rejeu du sphere tracing qui exige que
+≥ 80 % des rayons touchent la surface sans jamais la traverser.
+
+## 15. Reproduire
 
 ```bash
 make spur_math/libspur_kernels.so
@@ -257,10 +343,14 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OPENBLAS_THREAD_TIMEOUT=1 python sweep_
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OPENBLAS_THREAD_TIMEOUT=1 python sweep_dotnt.py
 
 # calibration de l'aiguillage et validation du portage
-python sweep_routing.py && python sweep_smalltile.py
+python sweep_routing.py && python sweep_smalltile.py && python sweep_tall.py
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python verify_port.py st
 OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 python verify_port.py mt
 python verify_gelu_fused.py st && python bench_mlp.py
+
+# cas d'usage du Simulation Lab (necessite web/server)
+OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 python bench_sims.py
+python preview_sdf.py gyroide 48 96      # rendu de controle -> results/sdf_gyroide.png
 ```
 
 `OPENBLAS_THREAD_TIMEOUT=1` est nécessaire **avant l'import de numpy** : sans

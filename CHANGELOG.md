@@ -1,6 +1,18 @@
 # Changelog
 
 ## non publie
+- **`web/` — 5e cas d'usage : champ implicite neuronal (SDF)** — un MLP evalue
+  par voxel sculpte une surface signee ; le navigateur la ray-marche (sphere
+  tracing dans une texture 3D demi-flottante, normales par differences
+  centrees, AO). Le serveur garantit et publie la borne de **Lipschitz** que le
+  rendu exige. Repli JavaScript inclus, 10 tests dedies (dont un rejeu numpy du
+  sphere tracing), rendu de controle sans navigateur (`experiments/preview_sdf.py`).
+  Gain des noyaux v2 sur ce cas : **49.9 ms -> 16.7 ms par frame (x3.00)**.
+- **`matmul_nt` / `matmul_nt_gelu` acceptent `out=`** et allouent leur sortie
+  avec `np.empty` au lieu de `np.zeros` (les noyaux ecrivent toute la matrice,
+  verifie par pre-remplissage NaN). Sur une couche (64000, 64) l'allocation
+  coutait plus cher que le GEMM : le champ implicite passe de 56 ms a 9 ms par
+  frame avec, en plus, une evaluation par paquets de lignes (cache L2).
 - **perf `matmul_nt` : x1.78 (f64) / x1.50 (f32) de mediane, sans regression** —
   campagne d'autotuning de 902 variantes compilees/verifiees/chronometrees
   (`experiments/`, journal complet dans `docs/EXPERIMENTS.md`). Deux nouveaux

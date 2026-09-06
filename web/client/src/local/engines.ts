@@ -266,8 +266,191 @@ class WaveLocal implements LocalEngine {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/**
+ * Repli du champ implicite : meme MLP par point, mais en JavaScript scalaire
+ * et sur une grille reduite (24^3 au lieu de 40^3). Le contrat de sortie est
+ * identique — `sdf_grid` en float32 — donc la scene Three.js ne change pas.
+ * Le champ reste 1-lipschitzien : le sphere tracing du GPU exige cette borne.
+ */
+class ImplicitLocal implements LocalEngine {
+  readonly rate = 6;
+  private n = 24;
+  private hid = 24;
+  private kIn = 14;
+  private w1!: Float32Array;
+  private b1!: Float32Array;
+  private w2!: Float32Array;
+  private b2!: Float32Array;
+  private w3!: Float32Array;
+  private base!: Float32Array;
+  private sdf!: Float32Array;
+  private feat!: Float32Array;
+  private tick = 0;
+  private time = 0;
+  private phase = 0;
+  private morph = 0.3;
+  private amplitude = 0.3;
+  private freq = 1;
+  private shape = 'sphere';
+
+  constructor(params: Record<string, unknown>) {
+    this.setParams(params);
+    this.build();
+  }
+
+  setParams(params: Record<string, unknown>): void {
+    if (typeof params.morph === 'number') this.morph = params.morph;
+    if (typeof params.amplitude === 'number') this.amplitude = params.amplitude;
+    if (typeof params.freq === 'number') this.freq = params.freq;
+    if (typeof params.shape === 'string') { this.shape = params.shape; this.buildBase(); }
+    if (typeof params.seed === 'number') this.build(params.seed);
+  }
+
+  command(message: Record<string, unknown>): void {
+    if (message.type === 'reseed') this.build(Math.floor(Math.random() * 1000));
+  }
+
+  private build(seed = 11): void {
+    const rnd = mulberry32(seed);
+    const { hid, kIn } = this;
+    const s1 = Math.sqrt(2 / kIn);
+    const s2 = Math.sqrt(2 / hid);
+    this.w1 = new Float32Array(hid * kIn);
+    this.b1 = new Float32Array(hid);
+    this.w2 = new Float32Array(hid * hid);
+    this.b2 = new Float32Array(hid);
+    this.w3 = new Float32Array(hid);
+    for (let i = 0; i < this.w1.length; i += 1) this.w1[i] = gaussian(rnd) * s1;
+    for (let i = 0; i < this.b1.length; i += 1) this.b1[i] = gaussian(rnd) * 0.1;
+    for (let i = 0; i < this.w2.length; i += 1) this.w2[i] = gaussian(rnd) * s2;
+    for (let i = 0; i < this.b2.length; i += 1) this.b2[i] = gaussian(rnd) * 0.1;
+    for (let i = 0; i < this.w3.length; i += 1) this.w3[i] = gaussian(rnd) * s2;
+    this.sdf = new Float32Array(this.n ** 3);
+    this.feat = new Float32Array(kIn);
+    this.buildBase();
+  }
+
+  private buildBase(): void {
+    const n = this.n;
+    this.base = new Float32Array(n * n * n);
+    for (let i = 0; i < n; i += 1) {
+      const x = -1 + (2 * i) / (n - 1);
+      for (let j = 0; j < n; j += 1) {
+        const y = -1 + (2 * j) / (n - 1);
+        for (let k = 0; k < n; k += 1) {
+          const z = -1 + (2 * k) / (n - 1);
+          let d: number;
+          if (this.shape === 'tore') {
+            const q = Math.hypot(x, z) - 0.52;
+            d = Math.hypot(q, y) - 0.2;
+          } else if (this.shape === 'boite') {
+            const b = 0.46;
+            const dx = Math.abs(x) - b; const dy = Math.abs(y) - b; const dz = Math.abs(z) - b;
+            const out = Math.hypot(Math.max(dx, 0), Math.max(dy, 0), Math.max(dz, 0));
+            d = out + Math.min(Math.max(dx, Math.max(dy, dz)), 0) - 0.06;
+          } else if (this.shape === 'gyroide') {
+            const f = 2 * Math.PI;
+            d = 0.16 * (Math.sin(f * x) * Math.cos(f * y) + Math.sin(f * y) * Math.cos(f * z)
+              + Math.sin(f * z) * Math.cos(f * x)) - 0.02;
+          } else {
+            d = Math.hypot(x, y, z) - 0.62;
+          }
+          this.base[(i * n + j) * n + k] = d;
+        }
+      }
+    }
+  }
+
+  step(dt: number): SimFrame {
+    const t0 = performance.now();
+    this.tick += 1;
+    this.time += dt;
+    this.phase += dt * this.morph;
+    const { n, hid, kIn } = this;
+    const st = Math.sin(this.phase);
+    const ct = Math.cos(this.phase);
+    const h1 = new Float32Array(hid);
+    const h2 = new Float32Array(hid);
+    let rms = 0;
+    for (let i = 0; i < n; i += 1) {
+      const x = -1 + (2 * i) / (n - 1);
+      for (let j = 0; j < n; j += 1) {
+        const y = -1 + (2 * j) / (n - 1);
+        for (let k = 0; k < n; k += 1) {
+          const z = -1 + (2 * k) / (n - 1);
+          const f = this.feat;
+          const coords = [x, y, z];
+          for (let c = 0; c < 3; c += 1) {
+            for (let m = 0; m < 2; m += 1) {
+              const arg = Math.PI * this.freq * (m + 1) * coords[c];
+              f[4 * c + 2 * m] = Math.sin(arg);
+              f[4 * c + 2 * m + 1] = Math.cos(arg);
+            }
+          }
+          f[12] = st; f[13] = ct;
+          for (let o = 0; o < hid; o += 1) {
+            let acc = this.b1[o];
+            const row = o * kIn;
+            for (let c = 0; c < kIn; c += 1) acc += this.w1[row + c] * f[c];
+            h1[o] = gelu(acc);
+          }
+          for (let o = 0; o < hid; o += 1) {
+            let acc = this.b2[o];
+            const row = o * hid;
+            for (let c = 0; c < hid; c += 1) acc += this.w2[row + c] * h1[c];
+            h2[o] = gelu(acc);
+          }
+          let d = 0;
+          for (let c = 0; c < hid; c += 1) d += this.w3[c] * h2[c];
+          const idx = (i * n + j) * n + k;
+          this.sdf[idx] = d;
+          rms += d * d;
+        }
+      }
+    }
+    rms = Math.sqrt(rms / this.sdf.length) + 1e-6;
+    const gain = this.amplitude / rms;
+    for (let i = 0; i < this.sdf.length; i += 1) {
+      this.sdf[i] = this.base[i] + gain * this.sdf[i];
+    }
+    // meme garantie que le serveur : |grad d| <= 1, sinon le sphere tracing
+    // du GPU traverse la surface. Differences centrees sur la grille.
+    const h2v = 2 * (2 / (n - 1));
+    let gmax = 0;
+    const at = (i: number, j: number, k: number): number => this.sdf[(i * n + j) * n + k];
+    for (let i = 1; i < n - 1; i += 1) {
+      for (let j = 1; j < n - 1; j += 1) {
+        for (let k = 1; k < n - 1; k += 1) {
+          const dx = (at(i + 1, j, k) - at(i - 1, j, k)) / h2v;
+          const dy = (at(i, j + 1, k) - at(i, j - 1, k)) / h2v;
+          const dz = (at(i, j, k + 1) - at(i, j, k - 1)) / h2v;
+          gmax = Math.max(gmax, Math.hypot(dx, dy, dz));
+        }
+      }
+    }
+    const lip = Math.max(1, gmax);
+    for (let i = 0; i < this.sdf.length; i += 1) this.sdf[i] /= lip;
+
+    const ms = performance.now() - t0;
+    const flops = 2 * n ** 3 * (kIn * hid + hid * hid + hid);
+    return {
+      header: header('sdf_grid', this.tick, this.time, ms, [n, n, n], {
+        grid: n, hidden: hid, k_in: kIn, points: n ** 3,
+        mflop_per_tick: Number((flops / 1e6).toFixed(1)),
+        gflops: Number((flops / 1e9 / Math.max(ms / 1e3, 1e-9)).toFixed(2)),
+        grad_max: Number(gmax.toFixed(3)), lipschitz: Number((gmax / lip).toFixed(3)),
+        surface_frac: 0,
+      }),
+      data: this.sdf,
+      bytes: this.sdf.byteLength,
+    };
+  }
+}
+
 export function createLocalEngine(simId: string, params: Record<string, unknown>): LocalEngine | null {
   if (simId === 'flowfield') return new FlowLocal(params);
   if (simId === 'wavefield') return new WaveLocal(params);
+  if (simId === 'implicit') return new ImplicitLocal(params);
   return null; // trainer & kernel lab exigent les noyaux du serveur
 }

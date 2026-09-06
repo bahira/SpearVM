@@ -27,6 +27,8 @@ RESULTS.mkdir(exist_ok=True)
 CASES = [
     ("flowfield", {"grid": 24, "hidden": 64}, 20),
     ("flowfield", {"grid": 32, "hidden": 128}, 10),
+    ("implicit", {"grid": 48, "hidden": 64}, 10),
+    ("implicit", {"grid": 56, "hidden": 128}, 6),
     ("trainer", {"hidden": 96, "batch": 2048, "steps": 4, "eval_grid": 72}, 20),
     ("trainer", {"hidden": 128, "batch": 4096, "steps": 4, "eval_grid": 96}, 10),
     ("wavefield", {"size": 160, "substeps": 2}, 20),

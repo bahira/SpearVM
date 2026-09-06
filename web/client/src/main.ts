@@ -12,6 +12,7 @@ import type { SceneApi, SimScene } from './core/types';
 import { SimSocket, type HelloMessage, type LinkState, type ParamSpec, type SimDescription } from './net/simSocket';
 import { createLocalEngine, type LocalEngine } from './local/engines';
 import { FlowFieldScene } from './scenes/flowField';
+import { ImplicitFieldScene } from './scenes/implicitField';
 import { WaveFieldScene } from './scenes/waveField';
 import { TrainerScene } from './scenes/trainer';
 import { KernelLabScene } from './scenes/kernelLab';
@@ -36,6 +37,16 @@ const TABS: TabDef[] = [
       "Un MLP evalue sur une grille 3D periodique produit un potentiel vecteur ; son rotationnel donne un champ incompressible ou le GPU advecte les particules.",
     kernels: ['matmul_nt_gelu', 'matmul_nt', 'tanh'],
     factory: () => new FlowFieldScene(),
+  },
+  {
+    id: 'implicit',
+    icon: '◉',
+    title: 'Champ implicite neuronal',
+    subtitle: 'MLP par point → SDF → sphere tracing GPU',
+    description:
+      "Un MLP evalue sur chaque voxel sculpte une surface implicite ; le GPU la ray-marche. C'est le profil de forme (beaucoup de lignes, k tres court) ou les noyaux SpearVM passent devant OpenBLAS.",
+    kernels: ['matmul_nt_gelu', 'matmul_nt'],
+    factory: () => new ImplicitFieldScene(),
   },
   {
     id: 'wavefield',

@@ -55,16 +55,22 @@ docker build -f web/Dockerfile -t spearvm-lab .
 docker run --rm -p 8000:8000 spearvm-lab      # CPU AVX2+FMA requis
 ```
 
-## Les quatre cas d'usage
+## Les cinq cas d'usage
 
 | # | Scene | Ce que calcule SpearVM | Ce que fait le GPU |
 |---|---|---|---|
 | 1 | **Champ de flux neuronal** | MLP 2 couches (`matmul_nt_gelu`) sur une grille 3D periodique → potentiel vecteur ; `rot` en differences centrees ; saturation `tanh` | advection ping-pong de 16 k → 262 k particules, echantillonnage trilineaire d'une texture 3D |
-| 2 | **Membrane non lineaire** | equation des ondes en differences finies, raidissement `tanh` AVX2 a chaque sous-pas | deplacement du maillage depuis une texture R32F (1 vertex = 1 cellule), eclairage speculaire |
-| 3 | **Entrainement live** | forward `matmul_nt` + `gelu`, backward `gelu_backward` + `matmul_backward`, Adam | surface predite coloree par l'erreur + cible filaire, courbe de perte |
-| 4 | **Kernel Lab** | `/api/bench` : debit vs numpy, erreur vs IEEE sur [-4,4], GFLOPS matmul, gain de fusion, gradcheck | barres 3D + murs de courbes log |
+| 2 | **Champ implicite neuronal** | MLP par voxel (`matmul_nt_gelu` x2, k=14) sur une grille 3D → distance signee ; renormalisation de Lipschitz pour rendre le champ marchable | sphere tracing dans une texture 3D demi-flottante, normales par differences centrees, AO 5 sondes |
+| 3 | **Membrane non lineaire** | equation des ondes en differences finies, raidissement `tanh` AVX2 a chaque sous-pas | deplacement du maillage depuis une texture R32F (1 vertex = 1 cellule), eclairage speculaire |
+| 4 | **Entrainement live** | forward `matmul_nt` + `gelu`, backward `gelu_backward` + `matmul_backward`, Adam | surface predite coloree par l'erreur + cible filaire, courbe de perte |
+| 5 | **Kernel Lab** | `/api/bench` : debit vs numpy, erreur vs IEEE sur [-4,4], GFLOPS matmul, gain de fusion, gradcheck | barres 3D + murs de courbes log |
 
-Les cas 1 a 3 sont pousses en WebSocket ; le cas 4 est un appel REST a la demande.
+Les cas 1 a 4 sont pousses en WebSocket ; le cas 5 est un appel REST a la demande.
+
+Le champ implicite est le cas ou les noyaux pesent le plus lourd : evaluer un
+reseau **par point** produit des GEMM `(grid^3) x (k=14)`, exactement le profil
+que BLAS amortit mal. Mesure bout-en-bout (`experiments/bench_sims.py`, 2 threads) :
+**49.9 ms -> 16.7 ms par frame (x3.00)** entre l'ancien noyau et le noyau v2.
 
 ## Protocole `spearvm.sim.v1`
 
@@ -147,4 +153,6 @@ noyaux (gelu 0.079 / quintique 0.0174 / erf 2e-5), l'equivalence
 `matmul_nt_gelu` ≡ `gelu(matmul_nt)` sur des tailles non alignees, le
 gradcheck par differences finies, la **convergence reelle** de l'entrainement
 (perte divisee par 5 en 60 ticks), la stabilite du schema d'ondes et
-l'incompressibilite du champ de flux.
+l'incompressibilite du champ de flux, et pour le champ implicite la **borne de
+Lipschitz** (|grad d| <= 1) plus un rejeu numpy du sphere tracing du shader :
+les rayons doivent atteindre la surface sans la traverser.

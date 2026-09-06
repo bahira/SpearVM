@@ -6,11 +6,12 @@ from typing import Any
 
 from .base import Frame, ParamSpec, Simulation
 from .flow_field import FlowFieldSim
+from .implicit_field import ImplicitFieldSim
 from .trainer import TrainerSim
 from .wave_field import WaveFieldSim
 
 REGISTRY: dict[str, type[Simulation]] = {
-    cls.sim_id: cls for cls in (FlowFieldSim, WaveFieldSim, TrainerSim)
+    cls.sim_id: cls for cls in (FlowFieldSim, ImplicitFieldSim, WaveFieldSim, TrainerSim)
 }
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ParamSpec",
     "Simulation",
     "FlowFieldSim",
+    "ImplicitFieldSim",
     "WaveFieldSim",
     "TrainerSim",
     "REGISTRY",
