@@ -226,6 +226,9 @@ async def sim_socket(websocket: WebSocket, sim_id: str) -> None:
         try:
             while not stop.is_set():
                 raw = await websocket.receive_text()
+                if not _rate_limiter.allow(tenant_id, settings.rate_limit_per_minute):
+                    await websocket.close(code=4429, reason="rate limit exceeded")
+                    break
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
