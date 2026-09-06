@@ -269,6 +269,120 @@ def attention_tile(q, k, v, scale=None, lengths=None, out=None, scratch=None):
     return o
 
 
+_attention_mha = _dll.spur_attention_mha_f32
+_attention_mha.argtypes = [_PF_, _PF_, _PF_, _PF_, ctypes.c_longlong,
+                           ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int,
+                           ctypes.c_int, ctypes.c_float,
+                           ctypes.POINTER(ctypes.c_int)]
+_attention_mha.restype = None
+
+
+_kv_pack_size = _dll.spur_kv_pack_size_f32
+_kv_pack_size.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int]
+_kv_pack_size.restype = ctypes.c_longlong
+_kv_pack = _dll.spur_kv_pack_f32
+_kv_pack.argtypes = [_PF_, _PF_, ctypes.c_longlong, ctypes.c_longlong,
+                     ctypes.c_int, _PF_]
+_kv_pack.restype = None
+_attention_mha_packed = _dll.spur_attention_mha_packed_f32
+_attention_mha_packed.argtypes = [_PF_, _PF_, _PF_, ctypes.c_longlong,
+                                  ctypes.c_longlong, ctypes.c_longlong,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_float,
+                                  ctypes.POINTER(ctypes.c_int)]
+_attention_mha_packed.restype = None
+
+
+class KVCache:
+    """Cache K/V packe une fois, reutilisable par des dizaines de tuiles.
+
+    Pour tq petit (decodage, micro-blocs QSA), le packing est en O(tk.d.H_kv)
+    alors que le calcul n'est qu'en O(tq.tk.d.H_q) : il domine l'appel. Le
+    packer une fois transforme le regime.
+
+        cache = sm.KVCache(k, v)          # k,v : (tk, H_kv, d) float32
+        out = cache.attend(q, lengths=L)  # q : (tq, H_q, d)
+    """
+
+    __slots__ = ("tk", "d", "h_kv", "_buf")
+
+    def __init__(self, k, v):
+        k = np.ascontiguousarray(k, dtype=np.float32)
+        v = np.ascontiguousarray(v, dtype=np.float32)
+        if k.ndim != 3 or v.shape != k.shape:
+            raise ValueError(f"k et v doivent etre (tk, H_kv, d) identiques : "
+                             f"{k.shape} vs {v.shape}")
+        self.tk, self.h_kv, self.d = k.shape
+        n = int(_kv_pack_size(self.tk, self.d, self.h_kv))
+        self._buf = np.empty(n, dtype=np.float32)
+        _kv_pack(k.ctypes.data_as(_PF_), v.ctypes.data_as(_PF_),
+                 self.tk, self.d, self.h_kv, self._buf.ctypes.data_as(_PF_))
+
+    @property
+    def nbytes(self):
+        return self._buf.nbytes
+
+    def attend(self, q, scale=None, lengths=None, out=None):
+        q = np.ascontiguousarray(q, dtype=np.float32)
+        if q.ndim != 3 or q.shape[2] != self.d:
+            raise ValueError(f"q attendu (tq, H_q, {self.d}), recu {q.shape}")
+        tq, h_q, d = q.shape
+        if h_q % self.h_kv:
+            raise ValueError(f"H_q={h_q} n'est pas un multiple de H_kv={self.h_kv}")
+        o = np.empty((tq, h_q, d), dtype=np.float32) if out is None else out
+        if o.shape != (tq, h_q, d) or o.dtype != np.float32 or not o.flags["C_CONTIGUOUS"]:
+            raise ValueError("out doit etre (tq,H_q,d) float32 C-contigu")
+        lp = None
+        if lengths is not None:
+            lengths = np.ascontiguousarray(lengths, dtype=np.int32)
+            if lengths.shape != (tq,):
+                raise ValueError(f"lengths attendu ({tq},), recu {lengths.shape}")
+            lp = lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        _attention_mha_packed(q.ctypes.data_as(_PF_), self._buf.ctypes.data_as(_PF_),
+                              o.ctypes.data_as(_PF_), tq, self.tk, d, h_q, self.h_kv,
+                              float(1.0 / np.sqrt(d)) if scale is None else float(scale),
+                              lp)
+        return o
+
+
+def attention_mha(q, k, v, scale=None, lengths=None, out=None):
+    """Attention multi-tetes (GQA) en une seule descente C — float32.
+
+    q:(tq, H_q, d)   k,v:(tk, H_kv, d)   -> (tq, H_q, d)
+    H_q doit etre un multiple de H_kv (les tetes de requetes partagent alors une
+    tete de cles, comme en GQA). `lengths` (tq,) porte le masque causal.
+
+    Les tetes K/V ne sont packees qu'une fois par groupe, le parallelisme
+    OpenMP porte sur les tetes de requetes, et rien ne repasse par Python entre
+    les tetes : c'est ce qui sort les petites tuiles du regime ou le cout
+    d'appel domine.
+    """
+    q = np.ascontiguousarray(q, dtype=np.float32)
+    k = np.ascontiguousarray(k, dtype=np.float32)
+    v = np.ascontiguousarray(v, dtype=np.float32)
+    if q.ndim != 3 or k.ndim != 3 or v.ndim != 3:
+        raise ValueError("q, k, v doivent etre 3D (t, tetes, d)")
+    tq, h_q, d = q.shape
+    tk, h_kv, dk = k.shape
+    if dk != d or v.shape != k.shape:
+        raise ValueError(f"formes incompatibles : q{q.shape} k{k.shape} v{v.shape}")
+    if h_q % h_kv:
+        raise ValueError(f"H_q={h_q} n'est pas un multiple de H_kv={h_kv}")
+    o = np.empty((tq, h_q, d), dtype=np.float32) if out is None else out
+    if o.shape != (tq, h_q, d) or o.dtype != np.float32 or not o.flags["C_CONTIGUOUS"]:
+        raise ValueError("out doit etre (tq,H_q,d) float32 C-contigu")
+    lp = None
+    if lengths is not None:
+        lengths = np.ascontiguousarray(lengths, dtype=np.int32)
+        if lengths.shape != (tq,):
+            raise ValueError(f"lengths attendu ({tq},), recu {lengths.shape}")
+        lp = lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    _attention_mha(q.ctypes.data_as(_PF_), k.ctypes.data_as(_PF_),
+                   v.ctypes.data_as(_PF_), o.ctypes.data_as(_PF_),
+                   tq, tk, d, h_q, h_kv,
+                   float(1.0 / np.sqrt(d)) if scale is None else float(scale), lp)
+    return o
+
+
 def matmul_nt(a, b, out=None):
     """C = A . B^T. a:(m,k), b:(n,k) -> (m,n). float32 ou float64.
 

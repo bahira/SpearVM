@@ -150,3 +150,84 @@ def test_attention_tile_validation():
         sm.attention_tile(q, k, v, lengths=np.zeros(3, dtype=np.int32))
     with pytest.raises(ValueError):
         sm.attention_tile(q, k, v, out=np.zeros((4, 9), dtype=np.float32))
+
+
+# --- attention multi-tetes et cache KV ---------------------------------------
+def _ref_mha(q, k, v, lengths=None):
+    tq, h_q, d = q.shape
+    tk, h_kv, _ = k.shape
+    rep = h_q // h_kv
+    kr = np.repeat(k, rep, axis=1).astype(np.float64)
+    vr = np.repeat(v, rep, axis=1).astype(np.float64)
+    out = np.zeros((tq, h_q, d))
+    for h in range(h_q):
+        s = (q[:, h].astype(np.float64) @ kr[:, h].T) / np.sqrt(d)
+        if lengths is not None:
+            s = np.where(np.arange(tk)[None, :] >= np.asarray(lengths)[:, None], -np.inf, s)
+        s -= s.max(axis=1, keepdims=True)
+        w = np.exp(s)
+        out[:, h] = (w / w.sum(axis=1, keepdims=True)) @ vr[:, h]
+    return out
+
+
+@pytest.mark.parametrize("tq,tk,d,h_q,h_kv", [
+    (1, 1, 8, 1, 1), (4, 64, 32, 8, 2), (7, 33, 16, 3, 3), (16, 512, 64, 12, 4),
+])
+def test_attention_mha(tq, tk, d, h_q, h_kv):
+    rng = np.random.default_rng(6)
+    q = (rng.standard_normal((tq, h_q, d)) / np.sqrt(d)).astype(np.float32)
+    k = (rng.standard_normal((tk, h_kv, d)) / np.sqrt(d)).astype(np.float32)
+    v = rng.standard_normal((tk, h_kv, d)).astype(np.float32)
+    lengths = np.minimum(np.arange(tk - tq + 1, tk + 1), tk).astype(np.int32)
+    lengths = np.maximum(lengths, 1).astype(np.int32)
+    for lens in (None, lengths):
+        got = sm.attention_mha(q, k, v, lengths=lens)
+        ref = _ref_mha(q, k, v, lens)
+        assert np.isfinite(got).all()
+        assert np.abs(got - ref).max() / max(np.abs(ref).max(), 1e-9) <= 5e-6
+
+
+def test_attention_mha_coherente_avec_tile():
+    """Le chemin multi-tetes doit redonner le chemin tete par tete."""
+    rng = np.random.default_rng(7)
+    tq, tk, d, h_q, h_kv = 8, 96, 32, 6, 3
+    q = (rng.standard_normal((tq, h_q, d)) / np.sqrt(d)).astype(np.float32)
+    k = (rng.standard_normal((tk, h_kv, d)) / np.sqrt(d)).astype(np.float32)
+    v = rng.standard_normal((tk, h_kv, d)).astype(np.float32)
+    lengths = np.arange(tk - tq + 1, tk + 1, dtype=np.int32)
+    mha = sm.attention_mha(q, k, v, lengths=lengths)
+    rep = h_q // h_kv
+    for h in range(h_q):
+        tile = sm.attention_tile(np.ascontiguousarray(q[:, h]),
+                                 np.ascontiguousarray(k[:, h // rep]),
+                                 np.ascontiguousarray(v[:, h // rep]),
+                                 lengths=lengths)
+        assert np.abs(mha[:, h] - tile).max() <= 2e-6
+
+
+def test_kv_cache_bit_a_bit():
+    """Le cache packe doit donner exactement le meme resultat que l'appel complet."""
+    rng = np.random.default_rng(8)
+    tk, d, h_q, h_kv = 256, 32, 8, 2
+    k = (rng.standard_normal((tk, h_kv, d)) / np.sqrt(d)).astype(np.float32)
+    v = rng.standard_normal((tk, h_kv, d)).astype(np.float32)
+    cache = sm.KVCache(k, v)
+    assert cache.nbytes == 2 * tk * d * h_kv * 4
+    for tq in (1, 3, 16):
+        q = (rng.standard_normal((tq, h_q, d)) / np.sqrt(d)).astype(np.float32)
+        lengths = np.full(tq, tk, dtype=np.int32)
+        a = cache.attend(q, lengths=lengths)
+        b = sm.attention_mha(q, k, v, lengths=lengths)
+        assert np.array_equal(a, b), "le chemin packe doit etre bit-a-bit identique"
+
+
+def test_mha_validation():
+    q = np.zeros((4, 6, 8), dtype=np.float32)
+    k = np.zeros((16, 4, 8), dtype=np.float32)
+    v = np.zeros((16, 4, 8), dtype=np.float32)
+    with pytest.raises(ValueError):
+        sm.attention_mha(q, k, v)                      # 6 n'est pas multiple de 4
+    with pytest.raises(ValueError):
+        sm.attention_mha(np.zeros((4, 8), dtype=np.float32), k, v)   # 2D refuse
+    with pytest.raises(ValueError):
+        sm.KVCache(k, np.zeros((15, 4, 8), dtype=np.float32))

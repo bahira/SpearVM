@@ -842,6 +842,10 @@ static inline long long spur_mm_mc(long long m, int nth, long long mc_max,
 
 static int spur_mm_threads(void){
 #ifdef _OPENMP
+    /* Appele depuis une region parallele (ex. attention multi-tetes) : le GEMM
+       s'execute alors sur un seul thread, il ne faut ni retrecir MC ni
+       reserver des tampons pour des threads qui n'existent pas ici. */
+    if (omp_in_parallel()) return 1;
     int t = omp_get_max_threads();
     return t < 1 ? 1 : t;
 #else
@@ -1571,4 +1575,177 @@ void spur_softmax_rows(const double* X, double* Y, long long rows,
         for (; j < n; j++) yr[j] *= inv;
         if (n < cols) memset(yr + n, 0, (size_t)(cols - n) * sizeof(double));
     }
+}
+
+/* ============================================================================
+   ATTENTION MULTI-TETES — une seule descente en C
+   ----------------------------------------------------------------------------
+   Motivation mesuree : appelee tete par tete depuis Python, la tuile
+   d'attention plafonne a ~12 GFLOPS sur les petites formes (tq=4) alors
+   qu'elle atteint 123 GFLOPS sur les grandes : c'est le cout fixe par appel
+   (ctypes, allocation du scratch, packing) qui domine, pas le calcul.
+
+   Ici tout se passe en C :
+     * phase 1 : les tetes K/V sont packees UNE fois (K en (tk,d), V transpose
+       en (d,tk)). En GQA (H_kv < H_q) plusieurs tetes de requetes partagent la
+       meme tete de cles : on ne la packe donc qu'une fois pour tout le groupe ;
+     * phase 2 : parallelisme OpenMP **sur les tetes de requetes**, chaque
+       thread disposant de ses propres tampons (scores et sortie).
+
+   Disposition memoire attendue (celle des simulations et de QSA) :
+     Q : (tq, H_q,  d)   K, V : (tk, H_kv, d)   O : (tq, H_q, d)
+   `lens[i]` = nombre de cles visibles par la requete i (NULL = toutes).
+   ========================================================================== */
+/* Choix de noyau interne a l'attention. Le dispatcher global ne peut pas
+   savoir qu'il s'agit d'une tuile d'attention ; ici on connait la forme exacte
+   et la mesure (results/tile_gemm_shapes.json) dit que pour m < 64 avec k
+   profond, le noyau dot bat le legacy de 1.4x a 2.0x — sauf a m multiple de 8,
+   ou le blocage 8 lignes du legacy tombe juste. Cette connaissance reste
+   locale : la regle d'aiguillage globale, elle, est deja Pareto-optimale sous
+   contrainte de non-regression et n'est pas touchee.                        */
+static inline void spur_att_gemm_f32(const float* A, const float* B, float* C,
+                                     long long m, long long k, long long n){
+    if (m < 64 && n >= 48 && k >= 128 && (m <= 4 || (m >= 16 && (m & 7))))
+        spur_gemm_dot_f32(A, B, C, m, k, n);
+    else
+        spur_matmul_nt_f32(A, B, C, m, k, n);
+}
+
+/* ---- cache KV packe, reutilisable ----------------------------------------
+   Pour tq petit (decodage, ou micro-blocs QSA), le packing de K/V domine le
+   cout de l'appel : il est en O(tk.d.h_kv) alors que le calcul n'est qu'en
+   O(tq.tk.d.h_q). Or les memes cles servent a des dizaines de tuiles de
+   requetes successives. On expose donc le packing pour l'amortir.
+   Disposition du tampon : [K packe (h_kv x tk x d)][V^T packe (h_kv x d x tk)].
+   ------------------------------------------------------------------------- */
+long long spur_kv_pack_size_f32(long long tk, long long d, int h_kv){
+    return (long long)2 * tk * d * h_kv;      /* en nombre de float */
+}
+
+void spur_kv_pack_f32(const float* K, const float* V, long long tk, long long d,
+                      int h_kv, float* packed){
+    const size_t kv_sz = (size_t)tk * d;
+    float* Kp = packed;
+    float* Vp = packed + kv_sz * (size_t)h_kv;
+    #pragma omp parallel for schedule(static)
+    for (int g = 0; g < h_kv; g++){
+        float* kd = Kp + kv_sz * (size_t)g;      /* (tk, d) */
+        float* vd = Vp + kv_sz * (size_t)g;      /* (d, tk) */
+        for (long long t = 0; t < tk; t++){
+            const float* ks = K + (t * h_kv + g) * d;
+            const float* vs = V + (t * h_kv + g) * d;
+            memcpy(kd + t * d, ks, (size_t)d * sizeof(float));
+            for (long long c = 0; c < d; c++) vd[c * tk + t] = vs[c];
+        }
+    }
+}
+
+void spur_attention_mha_packed_f32(const float* Q, const float* packed, float* O,
+                                   long long tq, long long tk, long long d,
+                                   int h_q, int h_kv, float scale, const int* lens);
+
+void spur_attention_mha_f32(const float* Q, const float* K, const float* V,
+                            float* O, long long tq, long long tk, long long d,
+                            int h_q, int h_kv, float scale, const int* lens){
+    if (tq <= 0 || tk <= 0 || d <= 0 || h_q <= 0 || h_kv <= 0) return;
+    if (h_q % h_kv) return;                      /* groupes GQA mal formes    */
+    const int rep = h_q / h_kv;
+
+    int nth = 1;
+#ifdef _OPENMP
+    nth = omp_get_max_threads();
+    if (nth > h_kv) nth = h_kv;
+    if (nth < 1) nth = 1;
+#endif
+    const int par_groups = (h_kv >= nth) && (nth > 1);
+    const int slots = par_groups ? nth : 1;
+
+    const size_t kv_sz = (size_t)tk * d;
+    const long long mb = (long long)rep * tq;    /* lignes par GEMM groupe    */
+    float* Kp = (float*)SPUR_AALLOC(sizeof(float) * kv_sz * (size_t)h_kv * 2);
+    const size_t per = (size_t)mb * d + (size_t)mb * tk + (size_t)mb * d;
+    float* work = (float*)SPUR_AALLOC(sizeof(float) * per * (size_t)slots);
+    int* lbuf = (int*)SPUR_AALLOC(sizeof(int) * (size_t)mb * (size_t)slots);
+    if (!Kp || !work || !lbuf){
+        if (Kp) SPUR_AFREE(Kp);
+        if (work) SPUR_AFREE(work);
+        if (lbuf) SPUR_AFREE(lbuf);
+        return;
+    }
+    float* Vp = Kp + kv_sz * (size_t)h_kv;
+    spur_kv_pack_f32(K, V, tk, d, h_kv, Kp);
+
+    spur_attention_mha_packed_f32(Q, Kp, O, tq, tk, d, h_q, h_kv, scale, lens);
+    SPUR_AFREE(lbuf);
+    SPUR_AFREE(work);
+    SPUR_AFREE(Kp);
+}
+
+/* Meme calcul, mais sur un cache KV deja packe (cf. spur_kv_pack_f32). */
+void spur_attention_mha_packed_f32(const float* Q, const float* packed, float* O,
+                                   long long tq, long long tk, long long d,
+                                   int h_q, int h_kv, float scale, const int* lens){
+    if (tq <= 0 || tk <= 0 || d <= 0 || h_q <= 0 || h_kv <= 0) return;
+    if (h_q % h_kv) return;
+    const int rep = h_q / h_kv;
+    const size_t kv_sz = (size_t)tk * d;
+    const float* Kp = packed;
+    const float* Vp = packed + kv_sz * (size_t)h_kv;
+
+    int nth = 1;
+#ifdef _OPENMP
+    nth = omp_get_max_threads();
+    if (nth > h_kv) nth = h_kv;
+    if (nth < 1) nth = 1;
+#endif
+    const int par_groups = (h_kv >= nth) && (nth > 1);
+    const int slots = par_groups ? nth : 1;
+    const long long mb = (long long)rep * tq;
+    const size_t per = (size_t)mb * d + (size_t)mb * tk + (size_t)mb * d;
+    float* work = (float*)SPUR_AALLOC(sizeof(float) * per * (size_t)slots);
+    int* lbuf = (int*)SPUR_AALLOC(sizeof(int) * (size_t)mb * (size_t)slots);
+    if (!work || !lbuf){
+        if (work) SPUR_AFREE(work);
+        if (lbuf) SPUR_AFREE(lbuf);
+        return;
+    }
+
+    /* Les `rep` tetes de requetes d'un groupe GQA partagent la meme tete de
+       cles : on les empile en un seul GEMM de rep*tq lignes au lieu de rep
+       GEMM de tq lignes. A tq=4 et rep=4, m passe de 4 a 16 — d'un regime
+       domine par les couts fixes a un regime de calcul.                      */
+    #pragma omp parallel for schedule(static) if(par_groups)
+    for (int g = 0; g < h_kv; g++){
+        int slot = 0;
+#ifdef _OPENMP
+        if (par_groups) slot = omp_get_thread_num();
+#endif
+        float* buf = work + per * (size_t)slot;
+        float* Qb = buf;
+        float* S  = Qb + (size_t)mb * d;
+        float* Ob = S + (size_t)mb * tk;
+        int* lb = lbuf + (size_t)mb * (size_t)slot;
+
+        for (int r = 0; r < rep; r++){
+            const int h = g * rep + r;
+            for (long long t = 0; t < tq; t++){
+                memcpy(Qb + ((long long)r * tq + t) * d, Q + (t * h_q + h) * d,
+                       (size_t)d * sizeof(float));
+                if (lens) lb[(long long)r * tq + t] = lens[t];
+            }
+        }
+
+        spur_att_gemm_f32(Qb, Kp + kv_sz * (size_t)g, S, mb, d, tk);
+        spur_softmax_core_f32(S, S, mb, tk, lens ? lb : NULL, scale);
+        spur_att_gemm_f32(S, Vp + kv_sz * (size_t)g, Ob, mb, tk, d);
+
+        for (int r = 0; r < rep; r++){
+            const int h = g * rep + r;
+            for (long long t = 0; t < tq; t++)
+                memcpy(O + (t * h_q + h) * d, Ob + ((long long)r * tq + t) * d,
+                       (size_t)d * sizeof(float));
+        }
+    }
+    SPUR_AFREE(lbuf);
+    SPUR_AFREE(work);
 }
