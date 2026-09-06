@@ -320,6 +320,33 @@ y = w8.matmul(x)                         # y = x · wᵀ
 w8.dequantize()                          # ce que le noyau utilise vraiment
 ```
 
+### Décodage par lots : où la quantification cesse de servir
+
+Quand B séquences décodent ensemble, les poids sont lus une fois pour B tokens.
+La quantification ne sert que tant qu'on est limité par la mémoire — le point de
+bascule se mesure (`bench_batch.py`, contexte 4096, d_model 768) :
+
+| B | f32 | bf16 | int8 | tok/s int8 | gain int8/f32 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2.81 ms | 1.25 | **0.82** | 1 214 | ×3.41 |
+| 4 | 4.16 ms | 2.84 | **1.90** | 2 109 | ×2.19 |
+| 16 | 8.26 ms | 6.33 | **5.91** | 2 705 | ×1.40 |
+| 64 | 18.00 ms | 18.00 | 17.95 | 3 566 | ×1.00 |
+
+Deux phénomènes distincts, séparés par la mesure composant par composant :
+
+* **au niveau du GEMM**, le croisement annoncé a bien lieu : à B = 64 la couche
+  W1 met 3.24 ms en f32 contre 3.69 ms en int8 (×0.88) — le GEMM est redevenu
+  limité par le calcul et le noyau int8, plus simple, perd ;
+* **au niveau du bloc**, les trois formats convergent pour une *autre* raison :
+  l'attention contre le cache de 4096 tokens pèse alors 7.3 ms sur ~18 ms et
+  elle est identique dans les trois variantes. Ce n'est pas le f32 qui rattrape,
+  c'est le poste « poids » qui cesse d'être celui qui décide.
+
+Débit maximal mesuré sur 2 vCPU pour un bloc de décodeur : **3 566 tokens/s**
+à B = 64, contre 356 tokens/s à B = 1 en f32 — le lot vaut ×10, la
+quantification ×3.4, et les deux ne se cumulent pas.
+
 ## 8. API et couverture
 
 ```python
