@@ -26,6 +26,38 @@ from .base import Frame, ParamSpec, Simulation
 FORMATS = ("f32", "bf16", "i8")
 
 
+class _NumpyKVCache:
+    """Minimal reference cache used when the native attention backend is absent."""
+
+    def __init__(self, k: np.ndarray, v: np.ndarray) -> None:
+        self.k = np.ascontiguousarray(k, dtype=np.float32)
+        self.v = np.ascontiguousarray(v, dtype=np.float32)
+        self.nbytes = self.k.nbytes + self.v.nbytes
+
+    def attend(self, q: np.ndarray) -> np.ndarray:
+        q = np.asarray(q, dtype=np.float32)
+        hq = q.shape[1]
+        rep = hq // self.k.shape[1]
+        keys = np.repeat(self.k, rep, axis=1).transpose(1, 0, 2)
+        values = np.repeat(self.v, rep, axis=1).transpose(1, 0, 2)
+        scores = np.einsum("bhd,hkd->bhk", q, keys) / np.sqrt(q.shape[-1])
+        scores -= scores.max(axis=-1, keepdims=True)
+        weights = np.exp(scores)
+        weights /= weights.sum(axis=-1, keepdims=True)
+        return np.einsum("bhk,hkd->bhd", weights, values).astype(np.float32)
+
+
+class _NumpyQuantizedWeight:
+    def __init__(self, weight: np.ndarray, dtype: str) -> None:
+        self.scale = np.max(np.abs(weight), axis=1, keepdims=True) / 127.0
+        self.scale = np.maximum(self.scale, 1e-8).astype(np.float32)
+        self.q = np.rint(weight / self.scale).clip(-127, 127).astype(np.int8)
+        self.nbytes = self.q.nbytes + self.scale.nbytes
+
+    def matmul(self, x: np.ndarray) -> np.ndarray:
+        return np.asarray(x, dtype=np.float32) @ (self.q.astype(np.float32) * self.scale).T
+
+
 def _rmsnorm(x, w, eps=1e-6):
     n = np.sqrt(np.mean(x.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps)
     return ((x / n) * w).astype(np.float32)
@@ -66,10 +98,8 @@ class AttentionLabSim(Simulation):
 
     # ------------------------------------------------------------------
     def setup(self) -> None:
-        import spur_math as sm  # noqa: PLC0415
-
-        self._sm = sm
         p = self.params
+        self._sm = self.k
         self.tk = int(p["context"])
         self.h_q = int(p["heads"])
         self.h_kv = min(int(p["kv_heads"]), self.h_q)
@@ -103,15 +133,24 @@ class AttentionLabSim(Simulation):
         # deja l'echelle, le faire deux fois aplatit les logits (entropie 1).
         self.kmat = np.ascontiguousarray(k, dtype=np.float32)
         self.vmat = np.ascontiguousarray(v, dtype=np.float32)
-        self.cache = sm.KVCache(self.kmat, self.vmat)
+        if self.k.native:
+            import spur_math as sm  # noqa: PLC0415
+            self.cache = sm.KVCache(self.kmat, self.vmat)
+        else:
+            self.cache = _NumpyKVCache(self.kmat, self.vmat)
 
         fmt = str(p["format"])
         self.fmt = fmt if fmt in FORMATS else "i8"
         if self.fmt == "f32":
             self.qw = None
             self.w_bytes = sum(a.nbytes for a in (self.wq, self.wo, self.w1, self.w2))
-        else:
+        elif self.k.native:
+            import spur_math as sm  # noqa: PLC0415
             self.qw = {n: sm.QuantizedWeight(getattr(self, n), dtype=self.fmt)
+                       for n in ("wq", "wo", "w1", "w2")}
+            self.w_bytes = sum(q.nbytes for q in self.qw.values())
+        else:
+            self.qw = {n: _NumpyQuantizedWeight(getattr(self, n), self.fmt)
                        for n in ("wq", "wo", "w1", "w2")}
             self.w_bytes = sum(q.nbytes for q in self.qw.values())
 
@@ -177,7 +216,13 @@ class AttentionLabSim(Simulation):
                 sm.matmul_nt(np.ascontiguousarray(q[:, hd]),
                              np.ascontiguousarray(self.kmat[:, hd // rep]),
                              out=scores[hd:hd + 1])
-            weights = sm.softmax(scores * np.float32(1.0 / np.sqrt(self.dh)))
+            logits = scores * np.float32(1.0 / np.sqrt(self.dh))
+            if self.k.native:
+                weights = sm.softmax(logits)
+            else:
+                logits -= logits.max(axis=1, keepdims=True)
+                weights = np.exp(logits)
+                weights /= weights.sum(axis=1, keepdims=True)
 
         self.tokens += 1
         rate = 1.0 / max(block_ms / 1e3, 1e-9)
