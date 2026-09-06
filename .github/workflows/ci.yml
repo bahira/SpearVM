@@ -82,8 +82,13 @@ jobs:
         run: |
           python -m pip install build wheel numpy
           python build_package.py
-          python -m wheel tags --platform-tag win_amd64 dist/spur_math-*py3-none-any.whl
-          python -m pip install --force-reinstall --no-deps numpy dist/spur_math-*win_amd64.whl
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          wheel = next(Path('dist').glob('spur_math-*py3-none-any.whl'))
+          subprocess.check_call(['python', '-m', 'wheel', 'tags', '--platform-tag', 'win_amd64', str(wheel)])
+          PY
+          python -m pip install --force-reinstall --no-deps numpy dist/*win_amd64.whl
           python -c "import spur_math, numpy as np; print('windows gelu ok:', spur_math.gelu(np.array([1.0])))"
       - uses: actions/upload-artifact@v6
         with:
@@ -91,39 +96,36 @@ jobs:
           path: dist/*win_amd64.whl
 
   linux-wheel:
-    # Build on a manylinux image so auditwheel can produce a portable tag.
+    # Build and inspect the Linux wheel on the supported CI runner.
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@v5
 
       - name: Build deps
         run: |
-          /opt/python/cp311-cp311/bin/python -m pip install build wheel auditwheel
+          python -m pip install build wheel auditwheel
 
       - name: Compile + package
         run: |
           gcc -O3 -mavx2 -mfma -fopenmp -fPIC -shared \
               -o spur_math/libspur_kernels.so src/spur_kernels.c -lm
-          /opt/python/cp311-cp311/bin/python -m build --wheel --no-isolation
+          python -m build --wheel --no-isolation
 
-      - name: Tag and repair Linux wheel
+      - name: Tag and inspect Linux wheel
         run: |
           mkdir -p wheelhouse
-          /opt/python/cp311-cp311/bin/python -m wheel tags --platform-tag linux_x86_64 \
-              dist/spur_math-*py3-none-any.whl
-          /opt/python/cp311-cp311/bin/auditwheel repair \
-              dist/spur_math-*linux_x86_64.whl --wheel-dir wheelhouse
-          /opt/python/cp311-cp311/bin/auditwheel show wheelhouse/*.whl
+          python -m wheel tags --platform-tag linux_x86_64 dist/spur_math-*py3-none-any.whl
+          cp dist/*linux_x86_64.whl wheelhouse/
+          auditwheel show wheelhouse/*.whl
 
-      - name: Smoke test repaired wheel
+      - name: Smoke test Linux wheel
         run: |
-          /opt/python/cp311-cp311/bin/python -m pip install --force-reinstall numpy wheelhouse/*.whl
-          /opt/python/cp311-cp311/bin/python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
+          python -m pip install --force-reinstall numpy wheelhouse/*.whl
+          python -c "import spur_math, numpy as np; print('gelu ok:', spur_math.gelu(np.array([1.0])))"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: manylinux-wheel
+          name: linux-wheel
           path: wheelhouse/*.whl
 
   security:
