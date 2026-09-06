@@ -110,6 +110,24 @@ function humanBytes(bps: number): string {
 /* ------------------------------------------------------------------ */
 /* Application                                                         */
 /* ------------------------------------------------------------------ */
+function assertWebGL2(): boolean {
+  // canvas jetable : on ne veut pas figer les attributs du contexte du viewer
+  const probe = document.createElement('canvas').getContext('webgl2');
+  if (probe) {
+    probe.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
+  }
+  el('loader').innerHTML =
+    '<div style="max-width:32rem;text-align:center;line-height:1.7">'
+    + '<b>WebGL 2 indisponible dans ce navigateur.</b><br>'
+    + 'Les simulations utilisent les textures 3D et les render targets flottants de WebGL 2. '
+    + "Activez l'acceleration materielle ou essayez un navigateur recent (Chrome, Firefox, Safari 15+).<br>"
+    + "L'API de calcul reste accessible sur <code>/api/health</code> et <code>/api/bench</code>."
+    + '</div>';
+  setPill('pill-link', 'WebGL 2 requis', 'bad');
+  return false;
+}
+
 class App {
   private viewer = new Viewer(el<HTMLCanvasElement>('viewport'));
   private scene: SimScene | null = null;
@@ -381,4 +399,6 @@ class App {
   }
 }
 
-void new App().start();
+if (assertWebGL2()) {
+  void new App().start();
+}
