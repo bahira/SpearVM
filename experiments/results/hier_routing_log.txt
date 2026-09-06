@@ -1,0 +1,37 @@
+==============================================================================
+ROUTAGE HIERARCHIQUE — la selection peut-elle etre sous-quadratique ?
+==============================================================================
+
+### 1. Cout du routage (budget 512 tokens, facteur 8, faisceau minimal)
+       N         plat         hier    ratio  plat/req  hier/req
+    1024       32,896       31,247     1.05       128       122
+    2048      131,328       81,844     1.60       256       160
+    4096      524,800      212,658     2.47       512       208
+    8192    2,098,176      533,406     3.93      1024       260
+   16384    8,390,656    1,233,096     6.80      2048       301
+   32768   33,558,528    2,869,031    11.70      4096       350
+  exposant empirique route_plat  : N^2.00
+  exposant empirique route_hier  : N^1.30
+
+### 2. Extrapolation a N = 1 000 000 (budget 2048 tokens)
+  route_plat  : 3.113e+10 produits scalaires  (N^2.00)
+  route_hier  : 2.636e+08 produits scalaires  (N^1.30)
+  attn_ops    : 5.454e+09 produits scalaires  (N^1.07)
+  -> le routage plat coute 5.7x l'attention elle-meme ; le hierarchique 0.048x
+
+### 3. Fidelite du routage (N=2048, budget 512 tokens = 128 blocs)
+  plat (exhaustif)     ops=  131,328  accord=100.0 %  masse= 84.6 % (min 49.8 %)
+  hier f=8 beam min    ops=   81,844  accord= 67.6 %  masse= 83.9 % (min 49.2 %)
+  hier f=8 beam 32     ops=  174,114  accord= 90.4 %  masse= 84.6 % (min 49.8 %)
+  hier f=8 beam 64     ops=  199,424  accord=100.0 %  masse= 84.6 % (min 49.8 %)
+  hier f=8 max         ops=   81,919  accord= 64.0 %  masse= 83.8 % (min 49.0 %)
+  hier f=4 beam min    ops=  113,993  accord= 71.9 %  masse= 84.3 % (min 49.2 %)
+  hier f=16 beam min   ops=   68,437  accord= 64.2 %  masse= 83.0 % (min 46.9 %)
+
+### 4. Verifications
+  causalite stricte           : True
+  budget respecte             : True
+  sortie finie                : True
+  budget = N -> attention dense : ecart relatif 4.05e-08
+
+-> results/hier_routing.csv / .json

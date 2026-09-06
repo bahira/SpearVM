@@ -1,0 +1,44 @@
+{
+  "flowfield grid=24/hidden=64": {
+    "legacy_ms": 7.247,
+    "v2_ms": 2.55,
+    "gain": 2.842,
+    "fps_v2": 392.2
+  },
+  "flowfield grid=32/hidden=128": {
+    "legacy_ms": 32.524,
+    "v2_ms": 18.354,
+    "gain": 1.772,
+    "fps_v2": 54.5
+  },
+  "implicit grid=48/hidden=64": {
+    "legacy_ms": 49.952,
+    "v2_ms": 16.666,
+    "gain": 2.997,
+    "fps_v2": 60.0
+  },
+  "implicit grid=56/hidden=128": {
+    "legacy_ms": 177.742,
+    "v2_ms": 60.272,
+    "gain": 2.949,
+    "fps_v2": 16.6
+  },
+  "trainer hidden=96/batch=2048/steps=4/eval_grid=72": {
+    "legacy_ms": 19.645,
+    "v2_ms": 12.94,
+    "gain": 1.518,
+    "fps_v2": 77.3
+  },
+  "trainer hidden=128/batch=4096/steps=4/eval_grid=96": {
+    "legacy_ms": 72.45,
+    "v2_ms": 61.006,
+    "gain": 1.188,
+    "fps_v2": 16.4
+  },
+  "wavefield size=160/substeps=2": {
+    "legacy_ms": 0.733,
+    "v2_ms": 0.952,
+    "gain": 0.77,
+    "fps_v2": 1050.4
+  }
+}

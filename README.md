@@ -65,23 +65,79 @@ pip install spur-math
 
 `sm.matmul_nt(A, B)` — C = A·Bᵀ, convention BLAS NT, double précision.
 
-- **Tuillage cache** KC×NC (512 Ko/tuile en L2) + blocage registres 4 lignes,
-  4 chaînes FMA indépendantes, OpenMP
-- err ≤ 1.4e-13 vs numpy sur toutes tailles (512→2048), y compris queues m%4
-- `matmul_nt_gelu` : activation fusionnée — la gelu est non linéaire donc k
-  n'est pas coupé, seulement le blocage colonnes
+Depuis v0.6, deux micro-noyaux **autotunés** (902 variantes générées,
+vérifiées et chronométrées — voir [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md))
+coexistent derrière la même API, avec un aiguillage calibré par la mesure :
 
-| Cas | SpearVM | numpy BLAS |
+- **[P] packé** — micro-noyau *broadcast* façon BLIS (f64 4×12, f32 4×24) :
+  A et B recopiés en panneaux contigus, zéro réduction horizontale.
+- **[D] dot-block** — **sans packing** (3×4) : en convention NT, k est contigu
+  des deux côtés, donc rien à copier. Gagnant dès qu'une dimension est étroite.
+- aiguillage `legacy / dot / pack` choisi sous contrainte **« aucune
+  régression »** ; `MC` s'adapte au nombre de threads ; `SPUR_MM_LEGACY=1`
+  restaure l'ancien noyau.
+- err ≤ 1.5e-15 (f64) / 8.3e-07 (f32) sur 324 formes par précision
+  (`tests/test_matmul_v2.py`), y compris toutes les queues m%MR, n%NR, k%KC.
+
+Mesuré sur 2 vCPU AVX2 (1 thread, numpy chronométré séparément,
+`experiments/verify_port.py`) :
+
+| Cas (f64) | v0.5 | **v0.6** | numpy BLAS |
+|---|---|---|---|
+| carré 512 | 20.8 GF | **43.3 GF** (×2.09) | 58.9 GF |
+| carré 1024 | 18.2 GF | **41.4 GF** (×2.28) | 63.5 GF |
+| 512×64×512 (k court) | 21.1 GF | **45.0 GF** (×2.13) | 43.1 GF (**×1.04**) |
+| 512×16×512 (k très court) | 13.0 GF | **38.4 GF** (×2.95) | 25.8 GF (**×1.49**) |
+| 2048×128×128 | 24.8 GF | **43.2 GF** (×1.74) | 41.6 GF (**×1.04**) |
+
+Gain médian sur 20 formes : **×1.78 (f64)** et **×1.50 (f32)** en mono-thread,
+×1.43 / ×1.30 sur 2 threads, **sans aucune régression** (pire cas ×1.00).
+`matmul_nt_gelu` gagne **×2.23 (f64)** / **×2.34 (f32)** de médiane : la
+fusion de la gelu dans la boucle j interdisait de couper k, donc interdisait le
+micro-noyau packé ; un épilogue vectorisé coûte bien moins cher.
+Bout-en-bout, une itération d'entraînement MLP 784-256-128-10 passe de
+14.3 ms à **7.5 ms** (f64, `experiments/bench_mlp.py`).
+
+Lecture honnête : en GEMM carré pur, OpenBLAS/MKL reste devant (0.65–0.73× ici,
+contre 0.36× avant cette campagne). Là où SpearVM passe devant, c'est sur les
+formes que BLAS amortit mal — **k court, dimension étroite** — et sur le
+**pipeline fusionné** NT sans copies.
+
+## exp, softmax et attention (v0.6+)
+
+Le dépôt n'avait ni `exp` ni `softmax` — les deux briques que réclame
+l'attention. Elles ont été construites et mesurées ([`docs/TRANSCEND.md`](docs/TRANSCEND.md)) :
+
+```python
+sm.exp(x)                                   # 1.69 ulp (f32), 2.12 ulp (f64)
+sm.softmax(x, lengths=None)                 # par ligne ; lengths = masque causal
+sm.attention_tile(q, k, v, lengths=None)    # softmax(Q·Kᵀ/√d) · V, une tête
+sm.attention_mha(q, k, v, lengths=None)     # multi-têtes / GQA, une descente C
+cache = sm.KVCache(k, v, dtype="bf16")      # packé une fois, réutilisé
+cache.attend(q, lengths=None)
+w8 = sm.QuantizedWeight(w, dtype="i8")      # poids ÷4 — pour le décodage
+w8.matmul(x)
+```
+
+Bloc de décodeur complet (attention + FFN + résiduels), 2 vCPU : prefill
+**×2.8 à ×9.65** vs numpy (jusqu'à 17 506 tok/s) ; décodage **×2.4 à ×9.7** avec
+poids int8, jusqu'à **3 439 tok/s** en mono-flux.
+
+| Noyau | Précision | Gain vs numpy |
 |---|---|---|
-| carré 512 | 24.5 GFLOPS | 48.2 GFLOPS (×0.51) |
-| carré 1024 | 13.9 GFLOPS | 18.0 GFLOPS (×0.77) |
-| carré 2048 | 10.3 GFLOPS | 23.5 GFLOPS (×0.44) |
-| **FFN 1024×768×3072 fusionné gelu** | **353 ms** | **858 ms (×2.43)** |
+| `exp` f32 | 1.69 ulp (libm : 1.66) | ×1.2 – ×1.9, jusqu'à 3.0 G elem/s |
+| `softmax` | ≈ numpy f32 | ×1.9 – ×6.2 |
+| `softmax` causal (longueurs) | idem | **×11.8** |
+| `attention_tile` | 6.6e-07 relatif | **×2.77 médian**, jusqu'à 123 GFLOPS |
+| `attention_mha` (multi-têtes, GQA) | idem | **×15.6 médian**, ×2.7 vs boucle par tête |
+| `KVCache` (packé, réutilisé) | idem | ×4.4 de plus — 68.8 GFLOPS à tq=4 |
+| `KVCache(dtype="bf16")` | 2e-03 relatif | empreinte ÷2 ; plus rapide au-delà de 17 Mo |
+| `QuantizedWeight(dtype="i8")` | 1e-02 sur le bloc | **×5.3 – ×5.9 en GEMV**, poids ÷4 |
 
-Lecture honnête : en GEMM carré pur, OpenBLAS/MKL reste devant (packing AVX,
-microkernels plus larges). Là où SpearVM gagne, c'est le **pipeline fusionné**
-— un passage au lieu de deux, zéro buffer intermédiaire — et l'intégration
-NT sans copies.
+Le masque causal est porté par un vecteur de **longueurs** : rien à
+matérialiser, et le noyau ne parcourt que les entrées valides. Le schéma
+« online » de flash-attention a été implémenté puis rejeté — perdant d'un
+facteur 1.2 à 4 sur CPU, où la ligne relue tient en L1.
 
 ## Pipeline NN end-to-end (bench_nn)
 
@@ -99,6 +155,37 @@ NT sans copies.
 gcc -O3 -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn -lm
 OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
 ```
+
+## Simulation Lab — 6 cas d'usage Three.js (`web/`)
+
+Démos temps réel **prêtes pour la production** où la physique est calculée par
+les noyaux SIMD et le rendu par le GPU : serveur FastAPI + WebSocket binaire,
+client Vite/TypeScript/Three.js.
+
+| Cas d'usage | Noyaux SpearVM | Rendu |
+|---|---|---|
+| **Champ de flux neuronal** | `matmul_nt_gelu` ×2 couches sur une grille 3D → potentiel vecteur, `rot`, `tanh` | 16 k→262 k particules advectées en ping-pong GPU dans une texture 3D |
+| **Champ implicite neuronal** | MLP par voxel (`matmul_nt_gelu`, k=14) → distance signée 1-lipschitzienne | sphere tracing GPU d'une texture 3D — aucune géométrie transmise |
+| **Membrane non linéaire** | équation des ondes + saturation `tanh` par sous-pas | maillage déplacé depuis une texture R32F, 1 vertex = 1 cellule |
+| **Entraînement live** | `matmul_nt` + `gelu`, `gelu_backward` + `matmul_backward`, Adam | surface prédite colorée par l'erreur + cible filaire + courbe de perte |
+| **Attention Lab** | bloc de décodeur réel : `attention_mha` + `KVCache` + `QuantizedWeight` | carte d'attention (têtes × positions) en relief, débit qui bouge avec le format |
+| **Kernel Lab** | banc d'essai : débit vs numpy, erreur vs IEEE, GFLOPS, gradcheck | barres 3D et courbes d'erreur log |
+
+Gain apporté par les noyaux v2, mesuré frame par frame sur ces scènes
+(`experiments/bench_sims.py`, 2 threads) : champ implicite 48³ **×3.00**
+(49.9 → 16.7 ms), champ de flux 24³ **×2.84**, entraînement live ×1.52,
+membrane ×1.0 (aucun matmul — rien à gagner, et c'est mesuré aussi).
+
+```bash
+make web-install     # venv + noyaux + npm install
+make web-serve       # serveur de calcul  :8000
+make web-dev         # front (proxy /api et /ws)  :5173
+make web-test        # 40 tests serveur + typecheck client
+```
+
+Dégradation propre : noyaux AVX2 → repli numpy exact → moteur JavaScript local
+si le serveur est injoignable ; le bandeau affiche toujours le mode réel.
+Détails, protocole binaire et déploiement Docker : [`web/README.md`](web/README.md).
 
 ## Précision (datasheet)
 
@@ -188,6 +275,8 @@ src/spur_kernels.c    Kernels AVX2 vectorisés + OpenMP
 include/spur.h        API publique
 examples/             Benchmarks et démos
 tests/                Tests de correction
+web/server/           Serveur de simulation FastAPI (WebSocket binaire + REST)
+web/client/           Client Three.js (Vite + TypeScript), 4 cas d'usage
 ```
 
 ## Limitations

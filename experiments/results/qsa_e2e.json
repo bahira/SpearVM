@@ -1,0 +1,191 @@
+[
+  {
+    "N": 2048,
+    "variante": "memoire",
+    "secondes": 0.851,
+    "tokens_par_s": 2406.5,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.2623,
+    "masse_min": 0.2495
+  },
+  {
+    "N": 2048,
+    "variante": "corrige (numpy)",
+    "secondes": 0.9787,
+    "tokens_par_s": 2092.6,
+    "gain_vs_memoire": 0.87,
+    "masse_moyenne": 0.2604,
+    "masse_min": 0.2382
+  },
+  {
+    "N": 2048,
+    "variante": "spur",
+    "secondes": 0.6974,
+    "tokens_par_s": 2936.5,
+    "gain_vs_memoire": 1.22,
+    "masse_moyenne": 0.2604,
+    "masse_min": 0.2382
+  },
+  {
+    "N": 2048,
+    "variante": "spur groupe 4",
+    "secondes": 0.2851,
+    "tokens_par_s": 7182.3,
+    "gain_vs_memoire": 2.985,
+    "masse_moyenne": 0.2601,
+    "masse_min": 0.2383
+  },
+  {
+    "N": 2048,
+    "variante": "spur groupe 16",
+    "secondes": 0.1695,
+    "tokens_par_s": 12084.5,
+    "gain_vs_memoire": 5.022,
+    "masse_moyenne": 0.2611,
+    "masse_min": 0.2499
+  },
+  {
+    "N": 2048,
+    "variante": "mha groupe 16",
+    "secondes": 0.1294,
+    "tokens_par_s": 15826.6,
+    "gain_vs_memoire": 6.577,
+    "masse_moyenne": 0.2611,
+    "masse_min": 0.2499
+  },
+  {
+    "N": 2048,
+    "variante": "mha groupe 64",
+    "secondes": 0.1189,
+    "tokens_par_s": 17230.0,
+    "gain_vs_memoire": 7.16,
+    "masse_moyenne": 0.235,
+    "masse_min": 0.2254
+  },
+  {
+    "N": 4096,
+    "variante": "memoire",
+    "secondes": 1.8344,
+    "tokens_par_s": 2232.9,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.128,
+    "masse_min": 0.1247
+  },
+  {
+    "N": 4096,
+    "variante": "corrige (numpy)",
+    "secondes": 2.0301,
+    "tokens_par_s": 2017.6,
+    "gain_vs_memoire": 0.904,
+    "masse_moyenne": 0.1273,
+    "masse_min": 0.1201
+  },
+  {
+    "N": 4096,
+    "variante": "spur",
+    "secondes": 1.3487,
+    "tokens_par_s": 3037.0,
+    "gain_vs_memoire": 1.36,
+    "masse_moyenne": 0.1273,
+    "masse_min": 0.1201
+  },
+  {
+    "N": 4096,
+    "variante": "spur groupe 4",
+    "secondes": 0.4756,
+    "tokens_par_s": 8613.1,
+    "gain_vs_memoire": 3.857,
+    "masse_moyenne": 0.1274,
+    "masse_min": 0.1181
+  },
+  {
+    "N": 4096,
+    "variante": "spur groupe 16",
+    "secondes": 0.2385,
+    "tokens_par_s": 17170.8,
+    "gain_vs_memoire": 7.69,
+    "masse_moyenne": 0.128,
+    "masse_min": 0.1248
+  },
+  {
+    "N": 4096,
+    "variante": "mha groupe 16",
+    "secondes": 0.1637,
+    "tokens_par_s": 25017.4,
+    "gain_vs_memoire": 11.204,
+    "masse_moyenne": 0.128,
+    "masse_min": 0.1248
+  },
+  {
+    "N": 4096,
+    "variante": "mha groupe 64",
+    "secondes": 0.1434,
+    "tokens_par_s": 28569.2,
+    "gain_vs_memoire": 12.795,
+    "masse_moyenne": 0.1207,
+    "masse_min": 0.118
+  },
+  {
+    "N": 8192,
+    "variante": "memoire",
+    "secondes": 3.8853,
+    "tokens_par_s": 2108.5,
+    "gain_vs_memoire": 1.0,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0623
+  },
+  {
+    "N": 8192,
+    "variante": "corrige (numpy)",
+    "secondes": 4.3657,
+    "tokens_par_s": 1876.5,
+    "gain_vs_memoire": 0.89,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0605
+  },
+  {
+    "N": 8192,
+    "variante": "spur",
+    "secondes": 2.8191,
+    "tokens_par_s": 2905.9,
+    "gain_vs_memoire": 1.378,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0605
+  },
+  {
+    "N": 8192,
+    "variante": "spur groupe 4",
+    "secondes": 0.8547,
+    "tokens_par_s": 9584.1,
+    "gain_vs_memoire": 4.546,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0612
+  },
+  {
+    "N": 8192,
+    "variante": "spur groupe 16",
+    "secondes": 0.3606,
+    "tokens_par_s": 22714.7,
+    "gain_vs_memoire": 10.773,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0624
+  },
+  {
+    "N": 8192,
+    "variante": "mha groupe 16",
+    "secondes": 0.2432,
+    "tokens_par_s": 33678.0,
+    "gain_vs_memoire": 15.973,
+    "masse_moyenne": 0.0632,
+    "masse_min": 0.0624
+  },
+  {
+    "N": 8192,
+    "variante": "mha groupe 64",
+    "secondes": 0.1907,
+    "tokens_par_s": 42968.2,
+    "gain_vs_memoire": 20.379,
+    "masse_moyenne": 0.0586,
+    "masse_min": 0.0557
+  }
+]

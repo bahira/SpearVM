@@ -1,0 +1,236 @@
+[
+  {
+    "role": "scores",
+    "m": 2,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 17.09,
+    "gf_pack": 4.64,
+    "gf_dot": 30.87
+  },
+  {
+    "role": "PV",
+    "m": 2,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 21.73,
+    "gf_pack": 6.03,
+    "gf_dot": 32.04
+  },
+  {
+    "role": "scores",
+    "m": 4,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 26.0,
+    "gf_pack": 13.54,
+    "gf_dot": 43.26
+  },
+  {
+    "role": "PV",
+    "m": 4,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 25.6,
+    "gf_pack": 12.45,
+    "gf_dot": 67.41
+  },
+  {
+    "role": "scores",
+    "m": 6,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 25.12,
+    "gf_pack": 17.36,
+    "gf_dot": 46.01
+  },
+  {
+    "role": "PV",
+    "m": 6,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 24.9,
+    "gf_pack": 9.6,
+    "gf_dot": 104.02
+  },
+  {
+    "role": "scores",
+    "m": 8,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 35.57,
+    "gf_pack": 14.69,
+    "gf_dot": 35.41
+  },
+  {
+    "role": "PV",
+    "m": 8,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 35.91,
+    "gf_pack": 12.74,
+    "gf_dot": 63.65
+  },
+  {
+    "role": "scores",
+    "m": 10,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 33.01,
+    "gf_pack": 16.1,
+    "gf_dot": 37.17
+  },
+  {
+    "role": "PV",
+    "m": 10,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 30.75,
+    "gf_pack": 13.4,
+    "gf_dot": 77.99
+  },
+  {
+    "role": "scores",
+    "m": 12,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 31.33,
+    "gf_pack": 19.36,
+    "gf_dot": 42.95
+  },
+  {
+    "role": "PV",
+    "m": 12,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 33.65,
+    "gf_pack": 16.29,
+    "gf_dot": 106.87
+  },
+  {
+    "role": "scores",
+    "m": 16,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 63.41,
+    "gf_pack": 26.01,
+    "gf_dot": 40.9
+  },
+  {
+    "role": "PV",
+    "m": 16,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 66.57,
+    "gf_pack": 22.37,
+    "gf_dot": 89.76
+  },
+  {
+    "role": "scores",
+    "m": 20,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 52.87,
+    "gf_pack": 30.47,
+    "gf_dot": 39.46
+  },
+  {
+    "role": "PV",
+    "m": 20,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 55.02,
+    "gf_pack": 23.79,
+    "gf_dot": 82.49
+  },
+  {
+    "role": "scores",
+    "m": 24,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 57.09,
+    "gf_pack": 34.4,
+    "gf_dot": 41.22
+  },
+  {
+    "role": "PV",
+    "m": 24,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 67.48,
+    "gf_pack": 28.81,
+    "gf_dot": 103.88
+  },
+  {
+    "role": "scores",
+    "m": 32,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 48.83,
+    "gf_pack": 41.9,
+    "gf_dot": 37.07
+  },
+  {
+    "role": "PV",
+    "m": 32,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 71.07,
+    "gf_pack": 34.71,
+    "gf_dot": 87.05
+  },
+  {
+    "role": "scores",
+    "m": 40,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 68.94,
+    "gf_pack": 49.62,
+    "gf_dot": 38.54
+  },
+  {
+    "role": "PV",
+    "m": 40,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 77.76,
+    "gf_pack": 40.55,
+    "gf_dot": 96.09
+  },
+  {
+    "role": "scores",
+    "m": 48,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 75.07,
+    "gf_pack": 58.01,
+    "gf_dot": 39.82
+  },
+  {
+    "role": "PV",
+    "m": 48,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 89.37,
+    "gf_pack": 45.57,
+    "gf_dot": 103.23
+  },
+  {
+    "role": "scores",
+    "m": 56,
+    "k": 128,
+    "n": 4096,
+    "gf_legacy": 69.98,
+    "gf_pack": 61.7,
+    "gf_dot": 38.85
+  },
+  {
+    "role": "PV",
+    "m": 56,
+    "k": 4096,
+    "n": 128,
+    "gf_legacy": 88.16,
+    "gf_pack": 50.38,
+    "gf_dot": 93.58
+  }
+]

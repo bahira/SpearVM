@@ -1,0 +1,27 @@
+====================================================================================
+Decodage par lots — bloc complet, contexte 4096, d_model 768, d_ff 3072
+====================================================================================
+
+   B    f32 ms  bf16 ms   i8 ms |  tok/s f32 tok/s bf16  tok/s i8 |  meilleur
+   1     2.470    1.270   0.789 |        405        787     1,268 |        i8
+   2     2.512    1.697   1.217 |        796      1,178     1,644 |        i8
+   4     3.861    2.754   1.775 |      1,036      1,452     2,254 |        i8
+   8     7.106    3.311   3.081 |      1,126      2,416     2,597 |        i8
+  16     8.241    5.776   5.704 |      1,941      2,770     2,805 |        i8
+  32    11.551    9.911   9.768 |      2,770      3,229     3,276 |        i8
+  64    18.263   18.356  18.231 |      3,504      3,487     3,511 |        i8
+
+  int8 gagne sur toute la plage testee (B <= 64)
+  debit maximal mesure : 3,511 tokens/s (2 vCPU, un bloc de decodeur)
+
+  Lecture (verifiee composant par composant) :
+   * le lot amortit la lecture des poids : le gain int8 tombe de x3.4
+     a B=1 a x1.0 a B=64 ;
+   * au niveau du GEMM seul, le croisement a bien lieu — a B=64 la
+     couche W1 met 3.24 ms en f32 contre 3.69 ms en int8 (x0.88) ;
+   * mais au niveau du BLOC les trois formats convergent pour une
+     autre raison : l'attention contre le cache de 4096 tokens pese
+     alors 7.3 ms sur ~18 ms et elle est identique dans les trois
+     variantes. Ce n'est pas le f32 qui rattrape, c'est le poste
+     'poids' qui cesse d'etre celui qui decide.
+-> results/batch_decode.csv

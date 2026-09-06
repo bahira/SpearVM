@@ -1,5 +1,134 @@
 # Changelog
 
+## non publie
+- **fidelite de l'attention creuse mesuree sur un modele ENTRAINE** — la reserve
+  laissee ouverte par l'audit est levee : `experiments/attention/tiny_lm.py`
+  entraine un transformeur GQA (2 couches, 4 tetes Q / 2 KV, contexte 128) sur
+  les sources du depot, avec les noyaux du depot, retropropagation ecrite a la
+  main et **verifiee par differences finies** (5e-05). Perte de validation 1.657
+  contre 5.088 au hasard.
+  Resultats : l'entrainement fait passer l'entropie de l'attention de 0.999 a
+  **0.440** et l'accord entre tetes d'un meme groupe GQA de 8 % a **64.7 %** —
+  le facteur qui bloquait sur donnees synthetiques disparait. Cout en
+  perplexite du noyau creux : **+0.4 % a 25 % du contexte**, contre **+11.6 %**
+  pour une fenetre recente et **+17.2 %** pour un tirage au hasard.
+  Domaine de validite explicite dans docs/ATTENTION_AUDIT.md section 9 : modele
+  minuscule, contexte court, corpus tres structure — la mesure de cout (x57 a
+  65 k) et celle de qualite (contexte 128) ne se multiplient pas.
+- **attention creuse en C** : l'index hierarchique de l'audit devient un noyau
+  (`spur_kv_index_build_f32`, `spur_attention_sparse_f32`, `KVCache.build_index`
+  / `.attend_sparse`). **x12.8 a 16 k de contexte, x57 a 65 k**, index = 9.5 %
+  du cache. A budget plein le chemin creux redonne l'attention dense a 5.7e-08
+  (test dedie) : la plomberie est exacte, ce qui a permis d'attribuer
+  correctement les pertes de fidelite.
+  Deux resultats de fond : (1) resumer un bloc par la MOYENNE de ses cles est un
+  mauvais choix — la masse captee passe de 0.543 a **0.766** en ajoutant la
+  direction principale de variation (iteration de puissance, sans LAPACK), car
+  la masse softmax depend du MAX du bloc ; (2) le facteur qui limite vraiment la
+  fidelite est le **partage de la decision de routage entre les tetes d'un
+  groupe GQA** — un oracle par tete atteint 7e-03 la ou le partage reste a
+  6e-01. Sur donnees synthetiques les tetes sont independantes : cette mesure
+  n'est pas transportable et doit etre refaite sur un modele entraine.
+- **`web/` — 6e cas d'usage : Attention Lab** — un bloc de decodeur SpearVM
+  decode reellement token apres token (attention multi-tetes sur `KVCache`
+  packe + FFN) et pousse la carte d'attention **effectivement calculee**
+  (tetes x positions, 8 Ko par frame). Le format des poids se change en direct
+  et le debit suit : 791 tok/s en f32, 1 238 en bf16, 1 576 en int8 sur 2 vCPU.
+  6 tests dedies (somme a 1 par tete, empreinte /2 et /4, et le fait que le
+  piquant des requetes change reellement l'entropie mesuree).
+- **poids quantifies bf16 / int8** (`spur_math.QuantizedWeight`) — a m petit un
+  GEMM ne fait que 2.m flops par poids lu : le temps est decide par le nombre
+  d'octets, pas d'operations. int8 (echelle **par ligne de sortie**) donne
+  **x5.26 a x5.87 en GEMV**, et le bloc de decodeur passe de x0.89 a **x2.38**
+  a contexte court, jusqu'a **x9.68** a 8 k de contexte — **3 439 tokens/s** en
+  mono-flux sur 2 vCPU, poids divises par quatre (23.6 -> 5.9 Mo).
+  Cout : erreur en sortie de bloc 0.9 a 1.4 % (0.2 % en bf16).
+  A m >= 16 le GEMM redevient limite par le calcul et int8 perd (x0.93) : c'est
+  un outil de decodage, pas de prefill, et c'est ecrit dans l'API.
+- **bloc de decodeur complet** (`experiments/attention/bench_block.py`) :
+  attention + FFN + residuels assembles avec les noyaux du depot.
+  Prefill **x2.8 a x9.65** vs numpy (6 250 a 17 506 tokens/s), decodage
+  **x1.7 a x3.69** au-dela de 2 k de contexte (x0.89 en dessous, ou le bloc est
+  domine par les GEMV du FFN — publie tel quel). Ecart max 1.1e-06.
+- **attention multi-tetes en une seule descente C + cache KV** — a tq=4 (taille
+  de micro-bloc QSA) la tuile plafonnait a 5 GFLOPS a cause du cout par appel :
+  un appel ctypes par tete, une allocation par appel, un packing K/V refait a
+  chaque fois. Quatre corrections mesurees : tout en C, empilement des tetes
+  d'un groupe GQA (m passe de tq a rep*tq), choix de noyau local a l'attention
+  (moyenne x1.28 sur 62 formes, **pire cas x1.00**), et `KVCache` qui amortit le
+  packing. Resultat : **5.0 -> 68.8 GFLOPS a tq=4 (x13.8)**, x15.6 median vs
+  numpy, decodage tq=1 a 34.5 GFLOPS. Le chemin packe est bit-a-bit identique.
+- **cache KV en bf16** (`KVCache(k, v, dtype="bf16")`) : empreinte divisee par
+  deux dans tous les cas, vitesse gagnante seulement au-dela de ~17 Mo de cache
+  (x1.08 a x1.41 ; x0.73 a x0.88 en dessous), erreur relative 1.3e-3 a 2.0e-3.
+  Le choix reste explicite : basculer silencieusement de 1e-7 a 2e-3 selon la
+  taille du contexte serait un piege.
+- **QSA bout-en-bout** : 2 108 -> **42 968 tokens/s (x20.4)** sur le listing du
+  memoire audite, a masse d'attention identique (`experiments/attention/bench_qsa_e2e.py`).
+- **audit d'architecture bout-en-bout** (`docs/ATTENTION_AUDIT.md`) : index
+  hierarchique manquant implemente (routage **N^1.30 contre N^2.00**, 11.7x
+  moins d'operations a N=32768) puis QSA complet reecrit avec les correctifs et
+  les noyaux du depot : **x10.6 sur le listing d'origine, a masse d'attention
+  identique**. Une erreur de l'audit lui-meme (regime dense non detecte, 78 h
+  annoncees au lieu de 24 h) est corrigee et signalee dans le rapport.
+- **`exp` AVX2 minimax : 1.69 ulp en f32 (libm : 1.66), x1.2 a x1.9** — polynome
+  cherche par iterations de Remez en erreur relative, degre choisi par mesure
+  (5 en f32, 10 en f64) ; reduction d'argument ln2 scindee hi/lo, 2^k par champ
+  d'exposant. `spur_batch_exp[_f32]`, `spur_math.exp`.
+- **`softmax` par ligne : x1.9 a x6.2 vs numpy, et x11.8 en causal** — le noyau
+  prend un vecteur de **longueurs** au lieu d'un masque -inf materialise, et ne
+  parcourt que les entrees valides. Le schema "online" facon flash-attention a
+  ete implemente puis abandonne : perdant d'un facteur 1.2 a 4 sur CPU (la
+  ligne relue tient en L1). `spur_softmax_rows[_f32]`, `spur_math.softmax`.
+- **`attention_tile` : x2.77 median vs numpy, jusqu'a 123 GFLOPS f32** — GEMM NT
+  -> softmax masque -> GEMM NT, echelle 1/sqrt(d) absorbee par l'exponentielle
+  (aucune passe de plus sur les scores). `spur_attention_tile_f32`,
+  `spur_math.attention_tile`. Journal : `docs/TRANSCEND.md`.
+- **`web/` — 5e cas d'usage : champ implicite neuronal (SDF)** — un MLP evalue
+  par voxel sculpte une surface signee ; le navigateur la ray-marche (sphere
+  tracing dans une texture 3D demi-flottante, normales par differences
+  centrees, AO). Le serveur garantit et publie la borne de **Lipschitz** que le
+  rendu exige. Repli JavaScript inclus, 10 tests dedies (dont un rejeu numpy du
+  sphere tracing), rendu de controle sans navigateur (`experiments/preview_sdf.py`).
+  Gain des noyaux v2 sur ce cas : **49.9 ms -> 16.7 ms par frame (x3.00)**.
+- **`matmul_nt` / `matmul_nt_gelu` acceptent `out=`** et allouent leur sortie
+  avec `np.empty` au lieu de `np.zeros` (les noyaux ecrivent toute la matrice,
+  verifie par pre-remplissage NaN). Sur une couche (64000, 64) l'allocation
+  coutait plus cher que le GEMM : le champ implicite passe de 56 ms a 9 ms par
+  frame avec, en plus, une evaluation par paquets de lignes (cache L2).
+- **perf `matmul_nt` : x1.78 (f64) / x1.50 (f32) de mediane, sans regression** —
+  campagne d'autotuning de 902 variantes compilees/verifiees/chronometrees
+  (`experiments/`, journal complet dans `docs/EXPERIMENTS.md`). Deux nouveaux
+  micro-noyaux derriere l'API existante : [P] broadcast + packing facon BLIS
+  (f64 4x12 KC576, f32 4x24 KC384) et [D] dot-block **sans packing** (3x4) pour
+  les formes etroites, avec un aiguillage calibre sous contrainte « aucune
+  regression » (pire cas x1.00 sur 20 formes). MC s'adapte au nombre de threads
+  (>= 1 bloc par thread). `SPUR_MM_LEGACY=1` restaure l'ancien noyau, toujours
+  exporte sous `spur_matmul_nt_legacy` / `spur_matmul_nt_f32_legacy`.
+  Rapport a OpenBLAS : 0.36x -> 0.65-0.73x en carre, et **>1** des que k est
+  court ou une dimension etroite (512x16x512 : x1.49 vs numpy).
+- **perf `matmul_nt_gelu` : x2.23 (f64) / x2.34 (f32) de mediane** — la fusion
+  de la gelu dans la boucle j interdisait de couper k, donc interdisait le
+  micro-noyau packe ; remplacee par GEMM autotune + epilogue biais+gelu
+  vectorise (ecart <= 1.9e-15 / 8.7e-07 avec l'ancien chemin).
+- **bout-en-bout** : iteration d'entrainement MLP 784-256-128-10 (batch 128)
+  14.3 ms -> 7.5 ms en f64, 5.9 ms -> 4.1 ms en f32 (`experiments/bench_mlp.py`).
+- `tests/test_matmul_v2.py` : 324 formes par precision autour des seuils
+  d'aiguillage et des blocages KC, C pre-rempli de NaN (detecte toute case non
+  ecrite), equivalence avec l'ancien noyau, variantes gelu avec/sans biais.
+- **fix f32 `matmul_nt` : queue `k%8` ignoree** pour les blocs de 8 lignes —
+  resultats faux des que `k` n'etait pas multiple de 8 et `m >= 8`
+  (ex. k=33 : erreur absolue ~3). Queue scalaire ajoutee, valide de k=1 a 257.
+- **perf f32 `matmul_nt_gelu` : x2.3 a x2.7** — la ligne de B etait rechargee
+  8 fois par bloc ; blocage registres 8 lignes (1 chargement de B, 8 chaines
+  FMA) comme dans `matmul_nt_f32`. Sortie bit-a-bit identique.
+  (1024x768x1024 : 48.7 ms -> 18.0 ms)
+- **`web/` — SpearVM Simulation Lab** : 4 cas d'usage Three.js prets pour la
+  production adosses aux noyaux (champ de flux neuronal, membrane non lineaire,
+  entrainement live avec backprop, banc d'essai des noyaux). Serveur FastAPI +
+  WebSocket binaire (int16 quantifie), client Vite/TypeScript/Three.js,
+  repli numpy puis repli JavaScript, Dockerfile, 40 tests, workflow CI dedie.
+
 ## 0.5.1
 - `dependencies=["numpy"]` declaree (manquait depuis 0.1.0)
 - job CI `linux-wheel` : manylinux wheel + auditwheel + smoke test, artifact par run

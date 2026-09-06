@@ -1,0 +1,102 @@
+{
+  "f64": {
+    "toujours_pack": {
+      "pire": 0.127,
+      "p10": 0.296,
+      "mediane": 0.848,
+      "moyenne": 0.916,
+      "meilleur": 3.015,
+      "regressions": 91
+    },
+    "toujours_dot": {
+      "pire": 0.385,
+      "p10": 0.647,
+      "mediane": 1.241,
+      "moyenne": 1.178,
+      "meilleur": 2.292,
+      "regressions": 42
+    },
+    "min<=32": {
+      "pire": 0.385,
+      "p10": 0.647,
+      "mediane": 1.241,
+      "moyenne": 1.198,
+      "meilleur": 3.015,
+      "regressions": 42
+    },
+    "min<=32_ou_64x64": {
+      "pire": 0.385,
+      "p10": 0.647,
+      "mediane": 1.264,
+      "moyenne": 1.205,
+      "meilleur": 3.015,
+      "regressions": 42
+    },
+    "v3": {
+      "pire": 0.448,
+      "p10": 1.0,
+      "mediane": 1.0,
+      "moyenne": 1.196,
+      "meilleur": 3.015,
+      "regressions": 7
+    },
+    "v4": {
+      "pire": 0.448,
+      "p10": 0.91,
+      "mediane": 1.1,
+      "moyenne": 1.204,
+      "meilleur": 3.015,
+      "regressions": 16
+    }
+  },
+  "f32": {
+    "toujours_pack": {
+      "pire": 0.09,
+      "p10": 0.222,
+      "mediane": 0.775,
+      "moyenne": 0.806,
+      "meilleur": 4.415,
+      "regressions": 98
+    },
+    "toujours_dot": {
+      "pire": 0.363,
+      "p10": 0.749,
+      "mediane": 1.098,
+      "moyenne": 1.138,
+      "meilleur": 3.458,
+      "regressions": 44
+    },
+    "min<=32": {
+      "pire": 0.363,
+      "p10": 0.749,
+      "mediane": 1.11,
+      "moyenne": 1.19,
+      "meilleur": 4.415,
+      "regressions": 42
+    },
+    "min<=32_ou_64x64": {
+      "pire": 0.363,
+      "p10": 0.749,
+      "mediane": 1.117,
+      "moyenne": 1.194,
+      "meilleur": 4.415,
+      "regressions": 39
+    },
+    "v3": {
+      "pire": 0.518,
+      "p10": 1.0,
+      "mediane": 1.0,
+      "moyenne": 1.116,
+      "meilleur": 4.415,
+      "regressions": 12
+    },
+    "v4": {
+      "pire": 0.518,
+      "p10": 0.969,
+      "mediane": 1.002,
+      "moyenne": 1.139,
+      "meilleur": 4.415,
+      "regressions": 16
+    }
+  }
+}

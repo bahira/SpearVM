@@ -1,0 +1,27 @@
+==================================================================================
+Fidelite sur poids APPRIS — 2 couches, 4 tetes Q / 2 KV, contexte 128
+==================================================================================
+
+### 1-3. Ce que l'entrainement a produit
+  entropie moyenne de l'attention        : 0.435 (1.0 = uniforme)
+  masse dans le quart le mieux note      : 0.956
+  masse dans le quart des BLOCS de 4     : 0.717
+  accord des tops entre tetes d'un groupe: 66.9 %
+  (512 mesures)
+
+### 4. Cout en perplexite du noyau creux (mesure decisive)
+
+  budget  % du contexte     perte  vs dense   perplexite  surcout
+   dense           100 %    1.5570    0.0000        4.745     0.0 %
+      64            50 %    1.5573    0.0003        4.746     0.0 %
+      32            25 %    1.5614    0.0043        4.765     0.4 %
+      16            12 %    1.5866    0.0296        4.887     3.0 %
+       8             6 %    1.6228    0.0657        5.067     6.8 %
+
+### 5. Le routage sert-il, face aux selections triviales ?
+  budget   index (C)   recents    hasard   surcout de perplexite
+      32        0.4 %     11.6 %     17.2 %
+      16        3.0 %     19.0 %     21.7 %
+       8        6.8 %     28.6 %     28.6 %
+
+-> results/fidelity_trained.json
