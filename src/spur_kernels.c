@@ -377,8 +377,8 @@ static inline float gelu_f32_scalar(float x){
 #define MM_KC 256   /* profondeur tuile : bande A de 4*KC*8 = 8 Ko          */
 #define MM_NC 256   /* largeur tuile  : tuile B de NC*KC*8  = 512 Ko (L2)   */
 
-void spur_matmul_nt(const double* A,const double* B,double* C,
-                    long long m,long long k,long long n){
+void spur_matmul_nt_legacy(const double* A,const double* B,double* C,
+                           long long m,long long k,long long n){
     memset(C,0,(size_t)m*n*sizeof(double));
     for(long long kb=0;kb<k;kb+=MM_KC){
         const long long ke=(kb+MM_KC<k)?kb+MM_KC:k;
@@ -619,7 +619,7 @@ void spur_batch_gelu_f32(const float* x,float* out,long long n){
     }
 }
 
-void spur_matmul_nt_f32(const float* A,const float* B,float* C,
+void spur_matmul_nt_f32_legacy(const float* A,const float* B,float* C,
                         long long m,long long k,long long n){
     memset(C,0,(size_t)m*n*sizeof(float));
     for(long long kb=0;kb<k;kb+=MM_KC){
@@ -778,5 +778,539 @@ void spur_batch_gelu_backward_f32(const float* dY,const float* x,float* dX,
         float u=c306*x[i]+c5;
         float g=(u<=0.0f)?0.0f:((u>=cm)?ck*cm:ck*(u+c306*x[i]));
         dX[i]=dY[i]*g;
+    }
+}
+
+/* ============================================================================
+   GEMM NT v2 — noyaux issus de l'autotuning (docs/EXPERIMENTS.md)
+   ----------------------------------------------------------------------------
+   902 variantes compilees, verifiees et chronometrees sur cette machine
+   (2 vCPU AVX2/FMA) ont degage deux familles gagnantes, complementaires :
+
+   [P] "pack"  micro-noyau broadcast facon BLIS : A et B sont packes en
+       panneaux contigus (Bp transpose la convention NT), la maille interne
+       accumule MR x NR/VL registres -> zero reduction horizontale.
+       Champions mesures : f64 MR=4 NR=12 KC=576 MC=64 NC=2048
+                           f32 MR=4 NR=24 KC=384 MC=128 NC=2048
+       -> f64 41.8 GF (x2.02 vs legacy), f32 83.8 GF (x1.43) en mono-thread.
+
+   [D] "dot"   bloc de produits scalaires, **zero packing** : en NT, k est
+       contigu des deux cotes, donc MR lignes de A x NR lignes de B tiennent
+       dans 12 accumulateurs (MR=3, NR=4) et une seule hsum finale par case.
+       -> f64 38.7 GF / f32 75.9 GF, mais surtout imbattable quand une des
+          dimensions est petite (le packing y coute plus qu'il ne rapporte).
+
+   Aiguillage (mesure, cf. results/shapes.csv) : min(m,n) <= 32, ou tuile
+   64x64 et moins -> [D] ; sinon -> [P].
+   SPUR_MM_LEGACY=1 force l'ancien noyau (garde-fou A/B en production).
+   ========================================================================== */
+
+#if defined(_WIN32)
+#include <malloc.h>
+#define SPUR_AALLOC(bytes) _aligned_malloc((size_t)(bytes), 64)
+#define SPUR_AFREE(p)      _aligned_free(p)
+#else
+static void* spur_aalloc(size_t bytes){
+    void* p = NULL;
+    return posix_memalign(&p, 64, bytes) ? NULL : p;
+}
+#define SPUR_AALLOC(bytes) spur_aalloc((size_t)(bytes))
+#define SPUR_AFREE(p)      free(p)
+#endif
+
+static int spur_mm_legacy(void){
+    static int cached = -1;
+    if (cached < 0){
+        const char* e = getenv("SPUR_MM_LEGACY");
+        cached = (e && e[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
+/* MC effectif : le parallelisme du noyau [P] porte sur les blocs de MC lignes.
+   Si m <= MC il n'y a qu'un bloc, donc un seul thread travaille : on retrecit
+   MC pour garantir au moins un bloc par thread (mesure : f32 128x128x128 a
+   2 threads passe de x0.78 a x1.2+ du legacy).                              */
+static inline long long spur_mm_mc(long long m, int nth, long long mc_max,
+                                   long long mr){
+    if (nth <= 1) return mc_max;
+    long long want = (m + nth - 1) / nth;
+    want = ((want + mr - 1) / mr) * mr;
+    if (want < mr) want = mr;
+    return (want < mc_max) ? want : mc_max;
+}
+
+static int spur_mm_threads(void){
+#ifdef _OPENMP
+    int t = omp_get_max_threads();
+    return t < 1 ? 1 : t;
+#else
+    return 1;
+#endif
+}
+
+/* Aiguillage [L]egacy / [P]ack / [D]ot.
+   Calibre par recherche exhaustive sur 149 formes x 2 precisions mesurees
+   dans la .so livree (experiments/sweep_routing.py -> results/routing.csv).
+   Contrainte imposee a la recherche : **aucune regression** (pire cas >= 1.00
+   du noyau legacy) ; sous cette contrainte on maximise le gain moyen sur les
+   formes de vraie taille (m*k*n >= 2^23) -> f64 x1.65, f32 x1.40.
+   Les seuils different par precision parce que le micro-noyau f32 est deux
+   fois plus large (NR=24 contre 12) : il lui faut plus de colonnes pour
+   amortir le packing.                                                       */
+#define SPUR_MM_ROUTE_LEGACY 0
+#define SPUR_MM_ROUTE_DOT    1
+#define SPUR_MM_ROUTE_PACK   2
+
+static inline int spur_mm_route(long long m, long long k, long long n,
+                                long long min_m, long long min_n,
+                                long long dot_lo, long long min_k_tile){
+    if (m < min_m || n < min_n) return SPUR_MM_ROUTE_LEGACY;  /* trop etroit */
+    if (m <= 64 && n <= 64)     /* petite tuile : les MR*NR hsum finales ne sont
+                                   amorties que si k est assez profond
+                                   (results/smalltile.csv) */
+        return (k >= min_k_tile) ? SPUR_MM_ROUTE_DOT : SPUR_MM_ROUTE_LEGACY;
+    const long long lo = (m < n) ? m : n;
+    if (lo <= dot_lo) return SPUR_MM_ROUTE_DOT;  /* dimension etroite : ne pas packer */
+    return SPUR_MM_ROUTE_PACK;
+}
+
+/* seuils (min_m, min_n, dot_lo, min_k_tile) retenus par la calibration */
+#define SPUR_MM_F64_MIN_M 24
+#define SPUR_MM_F64_MIN_N 32
+#define SPUR_MM_F64_DOTLO 32
+#define SPUR_MM_F64_MINKT 96
+#define SPUR_MM_F32_MIN_M 64
+#define SPUR_MM_F32_MIN_N 48
+#define SPUR_MM_F32_DOTLO 32
+#define SPUR_MM_F32_MINKT 512
+
+/* ------------------------------ f64 [P] ---------------------------------- */
+#define D_MR  4
+#define D_NR  12
+#define D_NV  3                       /* D_NR / 4 lanes */
+#define D_KC  576
+#define D_MC  64
+#define D_NC  2048
+#define D_MCP (((D_MC)+D_MR-1)/D_MR*D_MR)
+#define D_NCP (((D_NC)+D_NR-1)/D_NR*D_NR)
+
+static void spur_pack_a_d(const double* restrict A, long long lda,
+                          double* restrict Ap, long long mc, long long kc){
+    for (long long i = 0; i < mc; i += D_MR){
+        const long long rows = (mc - i < D_MR) ? (mc - i) : D_MR;
+        double* dst = Ap + i * kc;
+        for (long long q = 0; q < kc; q++){
+            for (long long r = 0; r < rows; r++)  dst[q*D_MR + r] = A[(i+r)*lda + q];
+            for (long long r = rows; r < D_MR; r++) dst[q*D_MR + r] = 0.0;
+        }
+    }
+}
+
+static void spur_pack_b_d(const double* restrict B, long long ldb,
+                          double* restrict Bp, long long nc, long long kc){
+    for (long long j = 0; j < nc; j += D_NR){
+        const long long cols = (nc - j < D_NR) ? (nc - j) : D_NR;
+        double* dst = Bp + j * kc;
+        for (long long q = 0; q < kc; q++){
+            for (long long c = 0; c < cols; c++)  dst[q*D_NR + c] = B[(j+c)*ldb + q];
+            for (long long c = cols; c < D_NR; c++) dst[q*D_NR + c] = 0.0;
+        }
+    }
+}
+
+static inline void spur_micro_d(long long kc, const double* restrict Ap,
+                                const double* restrict Bp, double* restrict C,
+                                long long ldc, int accumulate){
+    __m256d c[D_MR][D_NV];
+    for (int i = 0; i < D_MR; i++)
+        for (int j = 0; j < D_NV; j++) c[i][j] = _mm256_setzero_pd();
+
+    for (long long q = 0; q < kc; q++){
+        __m256d b[D_NV];
+        for (int j = 0; j < D_NV; j++) b[j] = _mm256_loadu_pd(Bp + q*D_NR + j*4);
+        for (int i = 0; i < D_MR; i++){
+            __m256d a = _mm256_broadcast_sd(Ap + q*D_MR + i);
+            for (int j = 0; j < D_NV; j++) c[i][j] = _mm256_fmadd_pd(a, b[j], c[i][j]);
+        }
+    }
+    if (accumulate){
+        for (int i = 0; i < D_MR; i++)
+            for (int j = 0; j < D_NV; j++)
+                _mm256_storeu_pd(C + i*ldc + j*4,
+                                 _mm256_add_pd(_mm256_loadu_pd(C + i*ldc + j*4), c[i][j]));
+    } else {
+        for (int i = 0; i < D_MR; i++)
+            for (int j = 0; j < D_NV; j++) _mm256_storeu_pd(C + i*ldc + j*4, c[i][j]);
+    }
+}
+
+/* exporte : permet l'A/B des trois noyaux depuis les bancs (experiments/) */
+void spur_gemm_pack_f64(const double* A, const double* B, double* C,
+                               long long m, long long k, long long n){
+    const int nth = spur_mm_threads();
+    double* Bp = (double*)SPUR_AALLOC(sizeof(double) * (size_t)D_KC * D_NCP);
+    double* Ap = (double*)SPUR_AALLOC(sizeof(double) * (size_t)nth * D_KC * D_MCP);
+    if (!Bp || !Ap){                       /* OOM : repli sur le noyau legacy */
+        if (Bp) SPUR_AFREE(Bp);
+        if (Ap) SPUR_AFREE(Ap);
+        spur_matmul_nt_legacy(A, B, C, m, k, n);
+        return;
+    }
+    const long long MCE = spur_mm_mc(m, nth, D_MC, D_MR);
+    for (long long jc = 0; jc < n; jc += D_NC){
+        const long long nc = (n - jc < D_NC) ? (n - jc) : D_NC;
+        for (long long pc = 0; pc < k; pc += D_KC){
+            const long long kc = (k - pc < D_KC) ? (k - pc) : D_KC;
+            const int accumulate = (pc != 0);
+            spur_pack_b_d(B + jc*k + pc, k, Bp, nc, kc);
+            #pragma omp parallel
+            {
+                int tid = 0;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+#endif
+                double* Apt = Ap + (size_t)tid * D_KC * D_MCP;
+                #pragma omp for schedule(static)
+                for (long long ic = 0; ic < m; ic += MCE){
+                    const long long mc = (m - ic < MCE) ? (m - ic) : MCE;
+                    spur_pack_a_d(A + ic*k + pc, k, Apt, mc, kc);
+                    for (long long jr = 0; jr < nc; jr += D_NR){
+                        const long long cols = (nc - jr < D_NR) ? (nc - jr) : D_NR;
+                        for (long long ir = 0; ir < mc; ir += D_MR){
+                            const long long rows = (mc - ir < D_MR) ? (mc - ir) : D_MR;
+                            double* cptr = C + (ic + ir)*n + jc + jr;
+                            __builtin_prefetch(cptr + 4*n, 1, 1);
+                            if (rows == D_MR && cols == D_NR){
+                                spur_micro_d(kc, Apt + ir*kc, Bp + jr*kc, cptr, n, accumulate);
+                            } else {
+                                double tmp[D_MR * D_NR] __attribute__((aligned(64)));
+                                spur_micro_d(kc, Apt + ir*kc, Bp + jr*kc, tmp, D_NR, 0);
+                                for (long long r = 0; r < rows; r++)
+                                    for (long long c = 0; c < cols; c++)
+                                        cptr[r*n + c] = accumulate ? cptr[r*n + c] + tmp[r*D_NR + c]
+                                                                   : tmp[r*D_NR + c];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    SPUR_AFREE(Ap);
+    SPUR_AFREE(Bp);
+}
+
+/* ------------------------------ f64 [D] ---------------------------------- */
+#define DD_MR 3
+#define DD_NR 4
+#define DD_KC 1024
+#define DD_NC 96
+
+static inline void spur_dot_tile_d(const double* restrict ap, const double* restrict bp,
+                                   double* restrict cp, long long lda, long long ldb,
+                                   long long ldc, long long rows, long long cols,
+                                   long long kc, int accumulate){
+    if (rows == DD_MR && cols == DD_NR){
+        __m256d acc[DD_MR][DD_NR];
+        for (int i = 0; i < DD_MR; i++)
+            for (int j = 0; j < DD_NR; j++) acc[i][j] = _mm256_setzero_pd();
+        long long q = 0;
+        for (; q + 3 < kc; q += 4){
+            __m256d av[DD_MR];
+            for (int i = 0; i < DD_MR; i++) av[i] = _mm256_loadu_pd(ap + i*lda + q);
+            for (int j = 0; j < DD_NR; j++){
+                const __m256d bv = _mm256_loadu_pd(bp + j*ldb + q);
+                for (int i = 0; i < DD_MR; i++) acc[i][j] = _mm256_fmadd_pd(av[i], bv, acc[i][j]);
+            }
+        }
+        double tail[DD_MR][DD_NR];
+        for (int i = 0; i < DD_MR; i++)
+            for (int j = 0; j < DD_NR; j++) tail[i][j] = 0.0;
+        for (long long t = q; t < kc; t++)
+            for (int i = 0; i < DD_MR; i++){
+                const double a = ap[i*lda + t];
+                for (int j = 0; j < DD_NR; j++) tail[i][j] += a * bp[j*ldb + t];
+            }
+        for (int i = 0; i < DD_MR; i++)
+            for (int j = 0; j < DD_NR; j++){
+                const double s = hs256(acc[i][j]) + tail[i][j];
+                cp[i*ldc + j] = accumulate ? cp[i*ldc + j] + s : s;
+            }
+        return;
+    }
+    /* bord : produit scalaire vectorise case par case (pas de padding) */
+    for (long long i = 0; i < rows; i++)
+        for (long long j = 0; j < cols; j++){
+            __m256d v = _mm256_setzero_pd();
+            long long q = 0;
+            for (; q + 3 < kc; q += 4)
+                v = _mm256_fmadd_pd(_mm256_loadu_pd(ap + i*lda + q),
+                                    _mm256_loadu_pd(bp + j*ldb + q), v);
+            double s = hs256(v);
+            for (; q < kc; q++) s += ap[i*lda + q] * bp[j*ldb + q];
+            cp[i*ldc + j] = accumulate ? cp[i*ldc + j] + s : s;
+        }
+}
+
+/* exporte : permet l'A/B des trois noyaux depuis les bancs (experiments/) */
+void spur_gemm_dot_f64(const double* A, const double* B, double* C,
+                              long long m, long long k, long long n){
+    for (long long pc = 0; pc < k; pc += DD_KC){
+        const long long kc = (k - pc < DD_KC) ? (k - pc) : DD_KC;
+        const int accumulate = (pc != 0);
+        for (long long jc = 0; jc < n; jc += DD_NC){
+            const long long ncz = (n - jc < DD_NC) ? (n - jc) : DD_NC;
+            /* on parallelise la dimension qui offre le plus de tuiles */
+            if (m / DD_MR >= ncz / DD_NR){
+                #pragma omp parallel for schedule(static)
+                for (long long i = 0; i < m; i += DD_MR){
+                    const long long rows = (m - i < DD_MR) ? (m - i) : DD_MR;
+                    for (long long j = 0; j < ncz; j += DD_NR){
+                        const long long cols = (ncz - j < DD_NR) ? (ncz - j) : DD_NR;
+                        __builtin_prefetch(A + (i + DD_MR)*k + pc, 0, 3);
+                        spur_dot_tile_d(A + i*k + pc, B + (jc + j)*k + pc,
+                                        C + i*n + jc + j, k, k, n, rows, cols, kc, accumulate);
+                    }
+                }
+            } else {
+                for (long long i = 0; i < m; i += DD_MR){
+                    const long long rows = (m - i < DD_MR) ? (m - i) : DD_MR;
+                    #pragma omp parallel for schedule(static)
+                    for (long long j = 0; j < ncz; j += DD_NR){
+                        const long long cols = (ncz - j < DD_NR) ? (ncz - j) : DD_NR;
+                        spur_dot_tile_d(A + i*k + pc, B + (jc + j)*k + pc,
+                                        C + i*n + jc + j, k, k, n, rows, cols, kc, accumulate);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void spur_matmul_nt(const double* A, const double* B, double* C,
+                    long long m, long long k, long long n){
+    if (m <= 0 || n <= 0) return;
+    if (k <= 0){ memset(C, 0, (size_t)m*n*sizeof(double)); return; }
+    if (spur_mm_legacy()){ spur_matmul_nt_legacy(A, B, C, m, k, n); return; }
+    switch (spur_mm_route(m, k, n, SPUR_MM_F64_MIN_M, SPUR_MM_F64_MIN_N,
+                          SPUR_MM_F64_DOTLO, SPUR_MM_F64_MINKT)){
+        case SPUR_MM_ROUTE_DOT:  spur_gemm_dot_f64(A, B, C, m, k, n);  break;
+        case SPUR_MM_ROUTE_PACK: spur_gemm_pack_f64(A, B, C, m, k, n); break;
+        default:                 spur_matmul_nt_legacy(A, B, C, m, k, n); break;
+    }
+}
+
+/* ------------------------------ f32 [P] ---------------------------------- */
+#define S_MR  4
+#define S_NR  24
+#define S_NV  3                       /* S_NR / 8 lanes */
+#define S_KC  384
+#define S_MC  128
+#define S_NC  2048
+#define S_MCP (((S_MC)+S_MR-1)/S_MR*S_MR)
+#define S_NCP (((S_NC)+S_NR-1)/S_NR*S_NR)
+
+static void spur_pack_a_s(const float* restrict A, long long lda,
+                          float* restrict Ap, long long mc, long long kc){
+    for (long long i = 0; i < mc; i += S_MR){
+        const long long rows = (mc - i < S_MR) ? (mc - i) : S_MR;
+        float* dst = Ap + i * kc;
+        for (long long q = 0; q < kc; q++){
+            for (long long r = 0; r < rows; r++)  dst[q*S_MR + r] = A[(i+r)*lda + q];
+            for (long long r = rows; r < S_MR; r++) dst[q*S_MR + r] = 0.0f;
+        }
+    }
+}
+
+static void spur_pack_b_s(const float* restrict B, long long ldb,
+                          float* restrict Bp, long long nc, long long kc){
+    for (long long j = 0; j < nc; j += S_NR){
+        const long long cols = (nc - j < S_NR) ? (nc - j) : S_NR;
+        float* dst = Bp + j * kc;
+        for (long long q = 0; q < kc; q++){
+            for (long long c = 0; c < cols; c++)  dst[q*S_NR + c] = B[(j+c)*ldb + q];
+            for (long long c = cols; c < S_NR; c++) dst[q*S_NR + c] = 0.0f;
+        }
+    }
+}
+
+static inline void spur_micro_s(long long kc, const float* restrict Ap,
+                                const float* restrict Bp, float* restrict C,
+                                long long ldc, int accumulate){
+    __m256 c[S_MR][S_NV];
+    for (int i = 0; i < S_MR; i++)
+        for (int j = 0; j < S_NV; j++) c[i][j] = _mm256_setzero_ps();
+
+    for (long long q = 0; q < kc; q++){
+        __m256 b[S_NV];
+        for (int j = 0; j < S_NV; j++) b[j] = _mm256_loadu_ps(Bp + q*S_NR + j*8);
+        for (int i = 0; i < S_MR; i++){
+            __m256 a = _mm256_broadcast_ss(Ap + q*S_MR + i);
+            for (int j = 0; j < S_NV; j++) c[i][j] = _mm256_fmadd_ps(a, b[j], c[i][j]);
+        }
+    }
+    if (accumulate){
+        for (int i = 0; i < S_MR; i++)
+            for (int j = 0; j < S_NV; j++)
+                _mm256_storeu_ps(C + i*ldc + j*8,
+                                 _mm256_add_ps(_mm256_loadu_ps(C + i*ldc + j*8), c[i][j]));
+    } else {
+        for (int i = 0; i < S_MR; i++)
+            for (int j = 0; j < S_NV; j++) _mm256_storeu_ps(C + i*ldc + j*8, c[i][j]);
+    }
+}
+
+/* exporte : permet l'A/B des trois noyaux depuis les bancs (experiments/) */
+void spur_gemm_pack_f32(const float* A, const float* B, float* C,
+                               long long m, long long k, long long n){
+    const int nth = spur_mm_threads();
+    float* Bp = (float*)SPUR_AALLOC(sizeof(float) * (size_t)S_KC * S_NCP);
+    float* Ap = (float*)SPUR_AALLOC(sizeof(float) * (size_t)nth * S_KC * S_MCP);
+    if (!Bp || !Ap){
+        if (Bp) SPUR_AFREE(Bp);
+        if (Ap) SPUR_AFREE(Ap);
+        spur_matmul_nt_f32_legacy(A, B, C, m, k, n);
+        return;
+    }
+    const long long MCE = spur_mm_mc(m, nth, S_MC, S_MR);
+    for (long long jc = 0; jc < n; jc += S_NC){
+        const long long nc = (n - jc < S_NC) ? (n - jc) : S_NC;
+        for (long long pc = 0; pc < k; pc += S_KC){
+            const long long kc = (k - pc < S_KC) ? (k - pc) : S_KC;
+            const int accumulate = (pc != 0);
+            spur_pack_b_s(B + jc*k + pc, k, Bp, nc, kc);
+            #pragma omp parallel
+            {
+                int tid = 0;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+#endif
+                float* Apt = Ap + (size_t)tid * S_KC * S_MCP;
+                #pragma omp for schedule(static)
+                for (long long ic = 0; ic < m; ic += MCE){
+                    const long long mc = (m - ic < MCE) ? (m - ic) : MCE;
+                    spur_pack_a_s(A + ic*k + pc, k, Apt, mc, kc);
+                    for (long long jr = 0; jr < nc; jr += S_NR){
+                        const long long cols = (nc - jr < S_NR) ? (nc - jr) : S_NR;
+                        for (long long ir = 0; ir < mc; ir += S_MR){
+                            const long long rows = (mc - ir < S_MR) ? (mc - ir) : S_MR;
+                            float* cptr = C + (ic + ir)*n + jc + jr;
+                            __builtin_prefetch(cptr + 4*n, 1, 1);
+                            if (rows == S_MR && cols == S_NR){
+                                spur_micro_s(kc, Apt + ir*kc, Bp + jr*kc, cptr, n, accumulate);
+                            } else {
+                                float tmp[S_MR * S_NR] __attribute__((aligned(64)));
+                                spur_micro_s(kc, Apt + ir*kc, Bp + jr*kc, tmp, S_NR, 0);
+                                for (long long r = 0; r < rows; r++)
+                                    for (long long c = 0; c < cols; c++)
+                                        cptr[r*n + c] = accumulate ? cptr[r*n + c] + tmp[r*S_NR + c]
+                                                                   : tmp[r*S_NR + c];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    SPUR_AFREE(Ap);
+    SPUR_AFREE(Bp);
+}
+
+/* ------------------------------ f32 [D] ---------------------------------- */
+#define SD_MR 3
+#define SD_NR 4
+#define SD_KC 1024
+#define SD_NC 256
+
+static inline void spur_dot_tile_s(const float* restrict ap, const float* restrict bp,
+                                   float* restrict cp, long long lda, long long ldb,
+                                   long long ldc, long long rows, long long cols,
+                                   long long kc, int accumulate){
+    if (rows == SD_MR && cols == SD_NR){
+        __m256 acc[SD_MR][SD_NR];
+        for (int i = 0; i < SD_MR; i++)
+            for (int j = 0; j < SD_NR; j++) acc[i][j] = _mm256_setzero_ps();
+        long long q = 0;
+        for (; q + 7 < kc; q += 8){
+            __m256 av[SD_MR];
+            for (int i = 0; i < SD_MR; i++) av[i] = _mm256_loadu_ps(ap + i*lda + q);
+            for (int j = 0; j < SD_NR; j++){
+                const __m256 bv = _mm256_loadu_ps(bp + j*ldb + q);
+                for (int i = 0; i < SD_MR; i++) acc[i][j] = _mm256_fmadd_ps(av[i], bv, acc[i][j]);
+            }
+        }
+        float tail[SD_MR][SD_NR];
+        for (int i = 0; i < SD_MR; i++)
+            for (int j = 0; j < SD_NR; j++) tail[i][j] = 0.0f;
+        for (long long t = q; t < kc; t++)
+            for (int i = 0; i < SD_MR; i++){
+                const float a = ap[i*lda + t];
+                for (int j = 0; j < SD_NR; j++) tail[i][j] += a * bp[j*ldb + t];
+            }
+        for (int i = 0; i < SD_MR; i++)
+            for (int j = 0; j < SD_NR; j++){
+                const float s = hsum8(acc[i][j]) + tail[i][j];
+                cp[i*ldc + j] = accumulate ? cp[i*ldc + j] + s : s;
+            }
+        return;
+    }
+    for (long long i = 0; i < rows; i++)
+        for (long long j = 0; j < cols; j++){
+            __m256 v = _mm256_setzero_ps();
+            long long q = 0;
+            for (; q + 7 < kc; q += 8)
+                v = _mm256_fmadd_ps(_mm256_loadu_ps(ap + i*lda + q),
+                                    _mm256_loadu_ps(bp + j*ldb + q), v);
+            float s = hsum8(v);
+            for (; q < kc; q++) s += ap[i*lda + q] * bp[j*ldb + q];
+            cp[i*ldc + j] = accumulate ? cp[i*ldc + j] + s : s;
+        }
+}
+
+/* exporte : permet l'A/B des trois noyaux depuis les bancs (experiments/) */
+void spur_gemm_dot_f32(const float* A, const float* B, float* C,
+                              long long m, long long k, long long n){
+    for (long long pc = 0; pc < k; pc += SD_KC){
+        const long long kc = (k - pc < SD_KC) ? (k - pc) : SD_KC;
+        const int accumulate = (pc != 0);
+        for (long long jc = 0; jc < n; jc += SD_NC){
+            const long long ncz = (n - jc < SD_NC) ? (n - jc) : SD_NC;
+            if (m / SD_MR >= ncz / SD_NR){
+                #pragma omp parallel for schedule(static)
+                for (long long i = 0; i < m; i += SD_MR){
+                    const long long rows = (m - i < SD_MR) ? (m - i) : SD_MR;
+                    for (long long j = 0; j < ncz; j += SD_NR){
+                        const long long cols = (ncz - j < SD_NR) ? (ncz - j) : SD_NR;
+                        __builtin_prefetch(A + (i + 2*SD_MR)*k + pc, 0, 3);
+                        spur_dot_tile_s(A + i*k + pc, B + (jc + j)*k + pc,
+                                        C + i*n + jc + j, k, k, n, rows, cols, kc, accumulate);
+                    }
+                }
+            } else {
+                for (long long i = 0; i < m; i += SD_MR){
+                    const long long rows = (m - i < SD_MR) ? (m - i) : SD_MR;
+                    #pragma omp parallel for schedule(static)
+                    for (long long j = 0; j < ncz; j += SD_NR){
+                        const long long cols = (ncz - j < SD_NR) ? (ncz - j) : SD_NR;
+                        spur_dot_tile_s(A + i*k + pc, B + (jc + j)*k + pc,
+                                        C + i*n + jc + j, k, k, n, rows, cols, kc, accumulate);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void spur_matmul_nt_f32(const float* A, const float* B, float* C,
+                        long long m, long long k, long long n){
+    if (m <= 0 || n <= 0) return;
+    if (k <= 0){ memset(C, 0, (size_t)m*n*sizeof(float)); return; }
+    if (spur_mm_legacy()){ spur_matmul_nt_f32_legacy(A, B, C, m, k, n); return; }
+    switch (spur_mm_route(m, k, n, SPUR_MM_F32_MIN_M, SPUR_MM_F32_MIN_N,
+                          SPUR_MM_F32_DOTLO, SPUR_MM_F32_MINKT)){
+        case SPUR_MM_ROUTE_DOT:  spur_gemm_dot_f32(A, B, C, m, k, n);  break;
+        case SPUR_MM_ROUTE_PACK: spur_gemm_pack_f32(A, B, C, m, k, n); break;
+        default:                 spur_matmul_nt_f32_legacy(A, B, C, m, k, n); break;
     }
 }

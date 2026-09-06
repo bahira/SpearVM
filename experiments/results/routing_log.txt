@@ -1,0 +1,26 @@
+
+### f64 — 149 formes
+  mesure ok (149 formes)
+
+### f32 — 149 formes
+  mesure ok (149 formes)
+
+=== f64 : regles candidates (rapport vs legacy) ===
+             regle    pire     p10  mediane  moyenne  regr<0.98
+     toujours_pack    0.13    0.30     0.85     0.92         91
+      toujours_dot    0.39    0.65     1.24     1.18         42
+           min<=32    0.39    0.65     1.24     1.20         42
+  min<=32_ou_64x64    0.39    0.65     1.26     1.21         42
+                v3    0.45    1.00     1.00     1.20          7
+                v4    0.45    0.91     1.10     1.20         16
+
+=== f32 : regles candidates (rapport vs legacy) ===
+             regle    pire     p10  mediane  moyenne  regr<0.98
+     toujours_pack    0.09    0.22     0.78     0.81         98
+      toujours_dot    0.36    0.75     1.10     1.14         44
+           min<=32    0.36    0.75     1.11     1.19         42
+  min<=32_ou_64x64    0.36    0.75     1.12     1.19         39
+                v3    0.52    1.00     1.00     1.12         12
+                v4    0.52    0.97     1.00     1.14         16
+
+-> results/routing.csv

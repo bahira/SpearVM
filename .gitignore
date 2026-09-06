@@ -23,3 +23,6 @@ spur_math/*.so
 .venv/
 venv/
 .pytest_cache/
+
+# --- autotuner (experiments/) : .so generes, on garde les CSV/JSON de mesure ---
+experiments/build/
