@@ -82,6 +82,9 @@ jobs:
         run: |
           python -m pip install build wheel numpy
           gcc -O3 -mavx2 -mfma -fopenmp -shared -o spur_math/spur_kernels.dll src/spur_kernels.c
+          GCCBIN=$(dirname $(which gcc))
+          cp "$GCCBIN"/libgcc_s_seh-1.dll "$GCCBIN"/libwinpthread-1.dll \
+             "$GCCBIN"/libgomp-1.dll spur_math/
           python -m build --wheel --no-isolation
           # The wheel contains a Windows DLL; install the artifact directly for a smoke test.
           python -m pip install --force-reinstall --no-deps numpy dist/spur_math-*.whl
