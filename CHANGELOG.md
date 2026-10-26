@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- **GELU exacte dans le FFN fusionné (champion superspear)** : l'épilogue de `matmul_nt_gelu` (f32/f64,
+  AVX-512 et replis) utilise maintenant `erf_v2` (= `gelu_erf`) au lieu de la GELU v1 approximative.
+  Erreur contre la loi exacte : 0.08 -> 2.2e-5. Surcoût ~5-7 % sur le GEMM fusionné.
+- **Backward cohérent** : `gelu_backward` (f32/f64) est la dérivée analytique exacte de `gelu_erf`
+  (écart 1.4e-9 vs différences finies). Avant, il dérivait l'approximation v1 : gradient faux.
+- `spur_math.graph` : l'opération `gelu` utilise `gelu_erf`.
+- Comparatif des champions superspear : `docs/CHAMPIONS_SUPERSPEAR.md`, `examples/compare_superspear_champions.py`.
+  Les fast slots superspear (relu/clip) sont moins précis que les noyaux SpearVM : non retenus comme défaut.
 - **Poids pré-packés** : `spur_math.PackedNT(W)` (f32) : packing de B une fois, puis `matmul` / `matmul_gelu`.
   FFN fusionné : 1.26 -> 0.89 ms à M=128. Repli automatique hors AVX-512.
 - **Benchmark end-to-end** (`examples/bench_encoder_e2e.py`, `docs/BENCH_ENCODER_E2E.md`) : encodeur 12 couches

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from . import gelu, gelu_backward, matmul_backward, matmul_nt, matmul_nt_gelu
+from . import gelu_erf as gelu, gelu_backward, matmul_backward, matmul_nt, matmul_nt_gelu
 
 
 @dataclass

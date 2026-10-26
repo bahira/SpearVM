@@ -33,7 +33,7 @@ def test_graph_fused_equals_unfused_and_numpy():
     plain = g.run({"x": X}, fuse=False)[y]
     assert np.abs(fused - plain).max() < 1e-3 * np.abs(plain).max()
     T = X.astype(np.float64) @ W1.astype(np.float64).T + b1
-    H = sm.gelu(T.astype(np.float32))
+    H = sm.gelu_erf(T.astype(np.float32))
     ref = H.astype(np.float64) @ W2.astype(np.float64).T
     assert np.abs(fused - ref).max() < 1e-2 * max(1.0, np.abs(ref).max())
 

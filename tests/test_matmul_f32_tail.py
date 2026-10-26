@@ -29,10 +29,8 @@ def test_matmul_nt_gelu_f32_tail(m, k, n):
     bias = rng.standard_normal(n).astype(np.float32)
     Y = sm.matmul_nt_gelu(A, B, bias)
     T = A.astype(np.float64) @ B.astype(np.float64).T + bias
-    G = sm.gelu(T) if hasattr(sm, "gelu") else None
-    if G is None:
-        pytest.skip("gelu indisponible")
-    assert np.abs(Y - G).max() < 0.1 + 0.02 * np.sqrt(k)
+    G = sm.gelu_erf(T)                       # forme exacte utilisee par le fusionne
+    assert np.abs(Y - G).max() < 1e-4 * max(1.0, np.sqrt(k))
 
 
 # ---- chemin AVX-512 vs AVX2 : memes resultats (dispatch a l'execution) ----
@@ -119,4 +117,4 @@ def test_matmul_nt_gelu_f64_fused(m, k, n, bias):
     b = rng.standard_normal(n) if bias else None
     C = sm.matmul_nt_gelu(A, B, b)
     T = A @ B.T + (b if bias else 0.0)
-    assert np.abs(C - sm.gelu(T)).max() < 1e-11
+    assert np.abs(C - sm.gelu_erf(T)).max() < 1e-11

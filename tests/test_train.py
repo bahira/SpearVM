@@ -12,7 +12,7 @@ def test_gradcheck_gelu_backward():
     w = rng.uniform(-2, 2, 200)
 
     def f(v):
-        return float(np.sum(sm.gelu(v) * w))
+        return float(np.sum(sm.gelu_erf(v) * w))
 
     eps = 1e-6
     num = np.zeros(200)

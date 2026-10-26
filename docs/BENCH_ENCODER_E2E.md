@@ -39,6 +39,12 @@ coûtent surtout à grand batch.
 - Même hybride avec GELU exacte appliquée sur la sortie du matmul : **max|écart| = 1.8e-7, cos = 1.000000**.
 - Conclusion : l'écart vient **entièrement** de l'approximation GELU du noyau fusionné, pas du matmul.
 
+## Mise à jour : GELU exacte dans le fusionné (champion superspear)
+
+Les résultats ci-dessus utilisent la GELU v1 approximative dans le FFN fusionné. Après passage à la
+GELU exacte (`gelu_erf`) : écart max 1.0e-5, **cos 1.000000** ; SpearVM vs torch ×0.79 (batch 1) / ×0.81 (batch 8),
+vs ORT ×0.69 / ×0.77. Données : `docs/bench/encoder_e2e_cpu2_exactgelu.json`. Voir `docs/CHAMPIONS_SUPERSPEAR.md`.
+
 ## Verdict
 Sur ce modèle et cette machine, **SpearVM ne bat pas PyTorch ni ONNX Runtime** : il est plus lent
 (×0.56 à ×0.89) et moins précis avec le GELU fusionné actuel. Le pré-packing des poids a gagné

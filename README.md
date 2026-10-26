@@ -132,6 +132,11 @@ précision prime (training, backprop)** — le gain de précision est ×850 pour
 > championnes (GELU / Tanh / Sigmoid / SiLU), leurs coefficients et le compromis
 > speed vs accuracy.
 
+> **Mise à jour (champion superspear)** : le FFN fusionné (`matmul_nt_gelu`) et sa dérivée utilisent
+> maintenant la GELU exacte (`gelu_erf`, erreur 2.2e-5 contre la loi exacte). Les chiffres « err max 0.0797 »
+> plus bas datent de l'ancienne GELU v1 approximative et ne s'appliquent plus au fusionné.
+> Détails : [`docs/CHAMPIONS_SUPERSPEAR.md`](docs/CHAMPIONS_SUPERSPEAR.md).
+
 ## Benchmark end-to-end (encodeur Transformer)
 
 Voir [`docs/BENCH_ENCODER_E2E.md`](docs/BENCH_ENCODER_E2E.md) : encodeur 12 couches d=384 contre
