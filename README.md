@@ -43,7 +43,7 @@ pip install spur-math
 | Item | Statut | Déclencheur |
 |---|---|---|
 | bf16/fp16 | différé | aucun compute natif bf16 en AVX2 ; fp16 = upconvert partout — à faire sur besoin mémoire exprimé |
-| Dispatch AVX-512 | différé | aucun CPU de test dispo (runners CI = AVX2 max) |
+| Dispatch AVX-512 | **fait (f32 matmul_nt)** | runtime `avx512f` ; `SPUR_FORCE_AVX2=1` pour forcer AVX2 ; reste des noyaux à porter |
 | Wheels manylinux pré-compilés | **job CI `linux-wheel`** (auditwheel, artifact à chaque run) | publication automatique au tag si besoin |
 
 ## Matmul (bench_mm)

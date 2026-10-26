@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **fix** `matmul_nt` float32 : résultats faux quand `k % 8 != 0` (le reste de la
+  boucle k était ignoré dans le bloc 8 lignes ; erreur ~8 sur `N(0,1)`). Test de régression
+  `tests/test_matmul_f32_tail.py`.
+- **AVX-512** : micro-noyau GEMM f32 (8×16, B packé par panneaux), dispatch à l'exécution.
+  ~100 GFLOPS vs ~80 en AVX2 sur 512³ (VM 2 cœurs). Forcer AVX2 : `SPUR_FORCE_AVX2=1`.
+
 ## 0.5.1
 - `dependencies=["numpy"]` declaree (manquait depuis 0.1.0)
 - job CI `linux-wheel` : manylinux wheel + auditwheel + smoke test, artifact par run
