@@ -132,6 +132,12 @@ précision prime (training, backprop)** — le gain de précision est ×850 pour
 > championnes (GELU / Tanh / Sigmoid / SiLU), leurs coefficients et le compromis
 > speed vs accuracy.
 
+## Benchmark end-to-end (encodeur Transformer)
+
+Voir [`docs/BENCH_ENCODER_E2E.md`](docs/BENCH_ENCODER_E2E.md) : encodeur 12 couches d=384 contre
+PyTorch CPU et ONNX Runtime. **Résultat honnête : SpearVM est plus lent (×0.56 à ×0.89)** avec le
+GELU fusionné actuel ; la GELU approchée donne cos 0.9973 vs référence exacte.
+
 ## Graphe de calcul (v0.6 dev)
 
 ```python

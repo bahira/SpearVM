@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- **Poids pré-packés** : `spur_math.PackedNT(W)` (f32) : packing de B une fois, puis `matmul` / `matmul_gelu`.
+  FFN fusionné : 1.26 -> 0.89 ms à M=128. Repli automatique hors AVX-512.
+- **Benchmark end-to-end** (`examples/bench_encoder_e2e.py`, `docs/BENCH_ENCODER_E2E.md`) : encodeur 12 couches
+  d=384 vs PyTorch CPU et ONNX Runtime. Résultat : SpearVM plus lent (×0.56 à ×0.89) ; écart de précision
+  dû entièrement à l'approximation GELU (cos 0.9973, exacte : 1.0).
 - **Build** : `make all` et `make test` fonctionnent sous Linux (le JIT utilisait `src/spur.c`
   Win64 et ne compilait pas ; on prend maintenant `src/spur_posix.c` -> `bin/spur.so`).
   `tests/test_encoding.c` : encodages verifies partout, smoke d'execution Win64 seulement.

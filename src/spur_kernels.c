@@ -798,33 +798,42 @@ void spur_batch_gelu_f32(const float* x,float* out,long long n){
     }
 }
 
-/* AVX-512 GEMM NT f32 : micro-noyau 8 lignes x 32 colonnes (16 accumulateurs ZMM).
-   B packe par panneaux de 32 colonnes ([q][32], contigu) ; A packe par bloc de 8 lignes.
-   Par q : 2 chargements de B, 8 diffusions de A, 16 FMA.  Retourne 0 si malloc echoue. */
+/* ===== Poids pre-packes (inference) =====
+   Layout : panneaux de 32 colonnes de B, chacun [q][32] sur tout k (zero-padde).
+   Un seul packing sert a tous les blocs kb/jb (les bornes jb sont multiples de 32). */
 #define NR32 32
+int spur_avx512_active(void){ return spur_use_avx512(1) ? 1 : 0; }
+
+float* spur_pack_nt_f32(const float* B,long long n,long long k){
+    long long npan=(n+NR32-1)/NR32;
+    float* buf=(float*)malloc(sizeof(float)*(size_t)npan*(size_t)k*NR32);
+    if(!buf) return NULL;
+    #pragma omp parallel for schedule(static)
+    for(long long p=0;p<npan;p++){
+        const long long j0=p*NR32;
+        const long long valid=(n-j0<NR32)?n-j0:NR32;
+        float* dst=buf+(size_t)p*k*NR32;
+        for(long long q=0;q<k;q++)
+            for(long long jj=0;jj<NR32;jj++)
+                dst[q*NR32+jj]=(jj<valid)?B[(size_t)(j0+jj)*k+q]:0.0f;
+    }
+    return buf;
+}
+void spur_free_packed(void* p){ free(p); }
+
+/* micro-noyau 8x32 f32 sur B pre-packe ; C doit etre initialise (zero ou accumule) */
 #ifdef SPIR_HAS_TARGET_ATTR
 __attribute__((target("avx512f,avx512vl")))
 #endif
-static int spur_matmul_nt_f32_avx512(const float* A,const float* B,float* C,
-                                     long long m,long long k,long long n){
-    float* Bp=(float*)malloc(sizeof(float)*(size_t)(MM_NC+NR32)*MM_KC);
-    if(!Bp) return 0;
-    memset(C,0,(size_t)m*n*sizeof(float));
+static void mm32_core(const float* A,const float* Bpk,float* C,
+                      long long m,long long k,long long n){
     for(long long kb=0;kb<k;kb+=MM_KC){
         const long long ke=(kb+MM_KC<k)?kb+MM_KC:k;
         const long long kc=ke-kb;
         for(long long jb=0;jb<n;jb+=MM_NC){
             const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+            const long long p0=jb/NR32;
             const long long npan=(je-jb+NR32-1)/NR32;
-            #pragma omp parallel for schedule(static)
-            for(long long p=0;p<npan;p++){
-                const long long j0=jb+NR32*p;
-                const long long valid=(je-j0<NR32)?je-j0:NR32;
-                float* dst=Bp+(size_t)p*kc*NR32;
-                for(long long qi=0;qi<kc;qi++)
-                    for(long long jj=0;jj<NR32;jj++)
-                        dst[qi*NR32+jj]=(jj<valid)?B[(size_t)(j0+jj)*k+kb+qi]:0.0f;
-            }
             #pragma omp parallel for schedule(static)
             for(long long i0=0;i0<m/8;i0++){
                 const float* ar=A+(size_t)i0*8*k+kb;
@@ -832,12 +841,12 @@ static int spur_matmul_nt_f32_avx512(const float* A,const float* B,float* C,
                 float abuf[8*MM_KC] __attribute__((aligned(64)));
                 for(long long qi=0;qi<kc;qi++)
                     for(int r=0;r<8;r++) abuf[qi*8+r]=ar[r*k+qi];
-                for(long long p=0;p<npan;p++){
-                    const long long j0=jb+NR32*p;
-                    const long long valid=(je-j0<NR32)?je-j0:NR32;
+                for(long long p=p0;p<p0+npan;p++){
+                    const long long j0=p*NR32;
+                    const long long valid=(n-j0<NR32)?n-j0:NR32;
                     const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
                     const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
-                    const float* bp=Bp+(size_t)p*kc*NR32;
+                    const float* bp=Bpk+(size_t)p*k*NR32+(size_t)kb*NR32;
                     __m512 lo[8],hi[8];
                     for(int r=0;r<8;r++){ lo[r]=_mm512_setzero_ps(); hi[r]=_mm512_setzero_ps(); }
                     for(long long qi=0;qi<kc;qi++){
@@ -861,12 +870,12 @@ static int spur_matmul_nt_f32_avx512(const float* A,const float* B,float* C,
             for(long long i=(m/8)*8;i<m;i++){
                 const float* ar=A+(size_t)i*k+kb;
                 float* cr=C+(size_t)i*n;
-                for(long long p=0;p<npan;p++){
-                    const long long j0=jb+NR32*p;
-                    const long long valid=(je-j0<NR32)?je-j0:NR32;
+                for(long long p=p0;p<p0+npan;p++){
+                    const long long j0=p*NR32;
+                    const long long valid=(n-j0<NR32)?n-j0:NR32;
                     const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
                     const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
-                    const float* bp=Bp+(size_t)p*kc*NR32;
+                    const float* bp=Bpk+(size_t)p*k*NR32+(size_t)kb*NR32;
                     __m512 l=_mm512_setzero_ps(),h=_mm512_setzero_ps();
                     for(long long qi=0;qi<kc;qi++){
                         const __m512 a=_mm512_set1_ps(ar[qi]);
@@ -880,7 +889,110 @@ static int spur_matmul_nt_f32_avx512(const float* A,const float* B,float* C,
             }
         }
     }
-    free(Bp);
+}
+
+/* C = A . B^T avec B pre-packe (AVX-512 requis : verifier spur_avx512_active) */
+void spur_matmul_nt_f32_packed(const float* A,const float* Bpk,float* C,
+                               long long m,long long k,long long n){
+    memset(C,0,(size_t)m*n*sizeof(float));
+    mm32_core(A,Bpk,C,m,k,n);
+}
+
+/* gelu(A . B^T + bias) avec B pre-packe (k non tuile). */
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static void gelu32_core(const float* A,const float* Bpk,const float* bias,float* C,
+                        long long m,long long k,long long n){
+    const __m512 c306=_mm512_set1_ps(0.306923f),c501=_mm512_set1_ps(0.501f);
+    const __m512 cm=_mm512_set1_ps(1.002f),z=_mm512_setzero_ps();
+    const __m512 ck=_mm512_set1_ps(0.997729f),cb=_mm512_set1_ps(-0.004004f);
+    #define SPUR_EPI(ACC,PTR,MK,J0)                                        \
+        do{                                                                \
+            __m512 xb=_mm512_add_ps(ACC,                                   \
+                (bias)?_mm512_maskz_loadu_ps(MK,bias+(J0)):z);             \
+            __m512 u=_mm512_fmadd_ps(c306,xb,c501);                        \
+            u=_mm512_min_ps(_mm512_max_ps(u,z),cm);                        \
+            __m512 g=_mm512_fmadd_ps(_mm512_mul_ps(xb,u),ck,cb);           \
+            _mm512_mask_storeu_ps((PTR),(MK),g);                           \
+        }while(0)
+    for(long long jb=0;jb<n;jb+=MM_NC){
+        const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+        const long long p0=jb/NR32;
+        const long long npan=(je-jb+NR32-1)/NR32;
+        #pragma omp parallel for schedule(static)
+        for(long long i0=0;i0<m/8;i0++){
+            const float* ar=A+(size_t)i0*8*k;
+            float* cr=C+(size_t)i0*8*n;
+            for(long long p=p0;p<p0+npan;p++){
+                const long long j0=p*NR32;
+                const long long valid=(n-j0<NR32)?n-j0:NR32;
+                const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
+                const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
+                const float* bp=Bpk+(size_t)p*k*NR32;
+                __m512 lo[8],hi[8];
+                for(int r=0;r<8;r++){ lo[r]=_mm512_setzero_ps(); hi[r]=_mm512_setzero_ps(); }
+                for(long long q=0;q<k;q++){
+                    const __m512 b0=_mm512_loadu_ps(bp+q*NR32);
+                    const __m512 b1=_mm512_loadu_ps(bp+q*NR32+16);
+                    for(int r=0;r<8;r++){
+                        const __m512 a=_mm512_set1_ps(ar[r*k+q]);
+                        lo[r]=_mm512_fmadd_ps(a,b0,lo[r]);
+                        hi[r]=_mm512_fmadd_ps(a,b1,hi[r]);
+                    }
+                }
+                for(int r=0;r<8;r++){
+                    SPUR_EPI(lo[r],cr+(size_t)r*n+j0,m0,j0);
+                    SPUR_EPI(hi[r],cr+(size_t)r*n+j0+16,m1,j0+16);
+                }
+            }
+        }
+        #pragma omp parallel for schedule(static)
+        for(long long i=(m/8)*8;i<m;i++){
+            const float* ar=A+(size_t)i*k;
+            float* cr=C+(size_t)i*n;
+            for(long long p=p0;p<p0+npan;p++){
+                const long long j0=p*NR32;
+                const long long valid=(n-j0<NR32)?n-j0:NR32;
+                const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
+                const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
+                const float* bp=Bpk+(size_t)p*k*NR32;
+                __m512 l=_mm512_setzero_ps(),h=_mm512_setzero_ps();
+                for(long long q=0;q<k;q++){
+                    const __m512 a=_mm512_set1_ps(ar[q]);
+                    l=_mm512_fmadd_ps(a,_mm512_loadu_ps(bp+q*NR32),l);
+                    h=_mm512_fmadd_ps(a,_mm512_loadu_ps(bp+q*NR32+16),h);
+                }
+                SPUR_EPI(l,cr+j0,m0,j0);
+                SPUR_EPI(h,cr+j0+16,m1,j0+16);
+            }
+        }
+    }
+    #undef SPUR_EPI
+}
+
+void spur_matmul_nt_gelu_f32_packed(const float* A,const float* Bpk,const float* bias,
+                                    float* C,long long m,long long k,long long n){
+    gelu32_core(A,Bpk,bias,C,m,k,n);
+}
+
+/* wrappers non pre-packes : pack puis noyau (appeles par les dispatchers) */
+static int spur_matmul_nt_f32_avx512(const float* A,const float* B,float* C,
+                                     long long m,long long k,long long n){
+    float* Bpk=spur_pack_nt_f32(B,n,k);
+    if(!Bpk) return 0;
+    memset(C,0,(size_t)m*n*sizeof(float));
+    mm32_core(A,Bpk,C,m,k,n);
+    free(Bpk);
+    return 1;
+}
+static int spur_matmul_nt_gelu_f32_avx512(const float* A,const float* B,
+                                          const float* bias,float* C,
+                                          long long m,long long k,long long n){
+    float* Bpk=spur_pack_nt_f32(B,n,k);
+    if(!Bpk) return 0;
+    gelu32_core(A,Bpk,bias,C,m,k,n);
+    free(Bpk);
     return 1;
 }
 
@@ -962,95 +1074,6 @@ void spur_matmul_nt_f32(const float* A,const float* B,float* C,
             }
         }
     }
-}
-
-/* GEMM NT f32 fusionne gelu(A.B^T + bias), AVX-512, micro-noyau 8x32.
-   k n'est PAS tuile (gelu non lineaire) : chaque bloc accumule tout k dans les
-   registres, puis biais + gelu avant ecriture.  Retourne 0 si malloc echoue. */
-#ifdef SPIR_HAS_TARGET_ATTR
-__attribute__((target("avx512f,avx512vl")))
-#endif
-static int spur_matmul_nt_gelu_f32_avx512(const float* A,const float* B,
-                                          const float* bias,float* C,
-                                          long long m,long long k,long long n){
-    float* Bp=(float*)malloc(sizeof(float)*(size_t)(MM_NC+NR32)*(size_t)k);
-    if(!Bp) return 0;
-    const __m512 c306=_mm512_set1_ps(0.306923f),c501=_mm512_set1_ps(0.501f);
-    const __m512 cm=_mm512_set1_ps(1.002f),z=_mm512_setzero_ps();
-    const __m512 ck=_mm512_set1_ps(0.997729f),cb=_mm512_set1_ps(-0.004004f);
-    for(long long jb=0;jb<n;jb+=MM_NC){
-        const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
-        const long long npan=(je-jb+NR32-1)/NR32;
-        #pragma omp parallel for schedule(static)
-        for(long long p=0;p<npan;p++){
-            const long long j0=jb+NR32*p;
-            const long long valid=(je-j0<NR32)?je-j0:NR32;
-            float* dst=Bp+(size_t)p*k*NR32;
-            for(long long q=0;q<k;q++)
-                for(long long jj=0;jj<NR32;jj++)
-                    dst[q*NR32+jj]=(jj<valid)?B[(size_t)(j0+jj)*k+q]:0.0f;
-        }
-        /* epilogue : biais + gelu sur un demi-registre, ecriture masquee */
-        #define SPUR_EPI(ACC,PTR,MK,J0)                                        \
-            do{                                                                \
-                __m512 xb=_mm512_add_ps(ACC,                                   \
-                    (bias)?_mm512_maskz_loadu_ps(MK,bias+(J0)):z);             \
-                __m512 u=_mm512_fmadd_ps(c306,xb,c501);                        \
-                u=_mm512_min_ps(_mm512_max_ps(u,z),cm);                        \
-                __m512 g=_mm512_fmadd_ps(_mm512_mul_ps(xb,u),ck,cb);           \
-                _mm512_mask_storeu_ps((PTR),(MK),g);                           \
-            }while(0)
-        #pragma omp parallel for schedule(static)
-        for(long long i0=0;i0<m/8;i0++){
-            const float* ar=A+(size_t)i0*8*k;
-            float* cr=C+(size_t)i0*8*n;
-            for(long long p=0;p<npan;p++){
-                const long long j0=jb+NR32*p;
-                const long long valid=(je-j0<NR32)?je-j0:NR32;
-                const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
-                const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
-                const float* bp=Bp+(size_t)p*k*NR32;
-                __m512 lo[8],hi[8];
-                for(int r=0;r<8;r++){ lo[r]=_mm512_setzero_ps(); hi[r]=_mm512_setzero_ps(); }
-                for(long long q=0;q<k;q++){
-                    const __m512 b0=_mm512_loadu_ps(bp+q*NR32);
-                    const __m512 b1=_mm512_loadu_ps(bp+q*NR32+16);
-                    for(int r=0;r<8;r++){
-                        const __m512 a=_mm512_set1_ps(ar[r*k+q]);
-                        lo[r]=_mm512_fmadd_ps(a,b0,lo[r]);
-                        hi[r]=_mm512_fmadd_ps(a,b1,hi[r]);
-                    }
-                }
-                for(int r=0;r<8;r++){
-                    SPUR_EPI(lo[r],cr+(size_t)r*n+j0,m0,j0);
-                    SPUR_EPI(hi[r],cr+(size_t)r*n+j0+16,m1,j0+16);
-                }
-            }
-        }
-        #pragma omp parallel for schedule(static)
-        for(long long i=(m/8)*8;i<m;i++){
-            const float* ar=A+(size_t)i*k;
-            float* cr=C+(size_t)i*n;
-            for(long long p=0;p<npan;p++){
-                const long long j0=jb+NR32*p;
-                const long long valid=(je-j0<NR32)?je-j0:NR32;
-                const __mmask16 m0=(__mmask16)((valid>=16)?0xFFFF:((1u<<valid)-1));
-                const __mmask16 m1=(__mmask16)((valid<=16)?0:((valid>=32)?0xFFFF:((1u<<(valid-16))-1)));
-                const float* bp=Bp+(size_t)p*k*NR32;
-                __m512 l=_mm512_setzero_ps(),h=_mm512_setzero_ps();
-                for(long long q=0;q<k;q++){
-                    const __m512 a=_mm512_set1_ps(ar[q]);
-                    l=_mm512_fmadd_ps(a,_mm512_loadu_ps(bp+q*NR32),l);
-                    h=_mm512_fmadd_ps(a,_mm512_loadu_ps(bp+q*NR32+16),h);
-                }
-                SPUR_EPI(l,cr+j0,m0,j0);
-                SPUR_EPI(h,cr+j0+16,m1,j0+16);
-            }
-        }
-        #undef SPUR_EPI
-    }
-    free(Bp);
-    return 1;
 }
 
 void spur_matmul_nt_gelu_f32(const float* A,const float* B,

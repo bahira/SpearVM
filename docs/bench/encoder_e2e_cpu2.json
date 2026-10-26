@@ -1,0 +1,61 @@
+{
+  "config": {
+    "layers": 12,
+    "d": 384,
+    "heads": 12,
+    "seq": 128,
+    "batch": [
+      1,
+      8
+    ],
+    "reps": 20,
+    "threads": 2,
+    "json": "/tmp/e2e_run1.json",
+    "ff": 1536,
+    "onnxruntime": "1.31.0",
+    "torch": "2.14.1+cu130",
+    "cpu_flags_avx512": "2"
+  },
+  "batch_1": {
+    "torch_cpu": {
+      "median_ms": 48.14,
+      "p90_ms": 53.89
+    },
+    "onnxruntime_cpu": {
+      "median_ms": 45.37,
+      "p90_ms": 48.36
+    },
+    "spearvm_ffn_hybrid": {
+      "median_ms": 54.18,
+      "p90_ms": 65.63
+    },
+    "accuracy_vs_torch": {
+      "max_abs_diff": 0.1364431381225586,
+      "cosine": 0.99730355,
+      "ort_max_abs_diff": 3.5762786865234375e-07
+    },
+    "speedup_vs_torch": 0.889,
+    "speedup_vs_ort": 0.837
+  },
+  "batch_8": {
+    "torch_cpu": {
+      "median_ms": 252.99,
+      "p90_ms": 259.41
+    },
+    "onnxruntime_cpu": {
+      "median_ms": 234.28,
+      "p90_ms": 300.98
+    },
+    "spearvm_ffn_hybrid": {
+      "median_ms": 415.71,
+      "p90_ms": 454.04
+    },
+    "accuracy_vs_torch": {
+      "max_abs_diff": 0.13750457763671875,
+      "cosine": 0.99679893,
+      "ort_max_abs_diff": 2.980232238769531e-07
+    },
+    "speedup_vs_torch": 0.609,
+    "speedup_vs_ort": 0.564
+  }
+}
