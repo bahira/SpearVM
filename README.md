@@ -2,199 +2,216 @@
 
 [![CI](https://github.com/bahira/SpearVM/actions/workflows/ci.yml/badge.svg)](https://github.com/bahira/SpearVM/actions/workflows/ci.yml)
 
-**Accélérateur mathématique SIMD** — noyaux transcendantals vectorisés AVX2,
-précision certifiée, matmul tuilé, couche FFN fusionnée avec backprop,
-mini-JIT x64 portable Linux/macOS/Windows pour programmes élément-par-élément. Python/C.
+**Accélérateur mathématique SIMD** — noyaux transcendantaux vectorisés AVX2/AVX-512,
+GELU exacte, matmul tuilé, couche FFN fusionnée avec rétropropagation, entraînement
+de MLP, inférence par lots avec poids pré-packés, et mini-JIT x64 portable
+Linux/macOS/Windows. Python/C. CPU seulement, pas de GPU.
 
 ```bash
 pip install spur-math
 ```
 
 > Windows : wheel binaire prêt. Linux/macOS : le sdist embarque les sources C ;
-> au premier import, `spur_math` se compile tout seul si gcc/clang est
-> présent (cache dans `spur_math/_native/`), sinon suivez le message d'aide.
+> au premier import, `spur_math` se compile tout seul si gcc/clang est présent
+> (cache dans `spur_math/_native/`), sinon suivez le message d'aide.
 > CPU requis : AVX2 + FMA (Haswell 2013+, Zen 2017+) — vérifié à l'import.
+> AVX-512 est utilisé automatiquement quand il est présent (`SPUR_FORCE_AVX2=1` pour le désactiver).
 
-## Speedups mesurés (4M éléments, OpenMP multi-cœur)
+## Sommaire
 
-| Noyau | Natif libm | AVX2 SPEAR | **Speedup** |
+- [Cas d'usage concrets](#cas-dusage-concrets) (entraînement, diagnostic, classification, service par lots)
+- [Entraînement de MLP](#entraînement-de-mlp-spur_mathnn)
+- [Inférence par lots : `PackedNT` / `PackedMLP`](#inférence-par-lots-packednt--packedmlp)
+- [Graphe de calcul et rétropropagation](#graphe-de-calcul-et-rétropropagation)
+- [Précision](#précision)
+- [Benchmarks](#benchmarks)
+- [Build, tests, installation](#build-tests-installation)
+- [Limitations](#limitations)
+
+## Cas d'usage concrets
+
+Quatre cas sur des données réelles embarquées dans scikit-learn (aucun téléchargement), modèles entraînés
+depuis zéro avec `spur_math.nn`. Détails, tableaux complets et limites : [`docs/USECASES.md`](docs/USECASES.md).
+
+```bash
+cd examples/usecases && PYTHONPATH=../.. python digits_mlp_train.py
+```
+
+| Cas | Script | Résultat SpearVM | Référence (PyTorch CPU / autre) |
 |---|---|---|---|
-| GELU | 120 ms | 8 ms | **×15.0** |
-| ERF | 306 ms | 9 ms | **×34.0** |
-| TANH | 234 ms | 9 ms | **×26.0** |
+| Chiffres manuscrits : entraînement MLP 64→128→10 | `digits_mlp_train.py` | précision 0,9844 en **0,41 s** | même précision, 0,71 s |
+| Service par lots du modèle digits | `digits_batch_serving.py` | **2,8 M échantillons/s** à lot 1024 ; plus rapide à partir du lot 32 | PyTorch 2,3 M/s ; numpy 0,3 M/s |
+| Diagnostic breast cancer (CV 5 plis) | `breast_cancer_screening.py` | AUC 0,9920, entraînement 2,5 s | **régression logistique meilleure** (AUC 0,9955, 0,02 s) |
+| Classification de vins, 3 cultivars (CV 5 plis) | `wine_quality_classify.py` | précision 0,9832, 1,4 s | même précision ; PyTorch mieux calibré, 5,7 s |
 
-## v0.4 — fp32 ×2, backprop complète, map 4 entrées
+Conclusion honnête : SpearVM ne bat pas PyTorch en précision sur ces jeux, mais il entraîne et sert
+des petits MLP plus vite (environ 1,7× à 4× pour l'entraînement). Sur données tabulaires, une régression logistique
+suffit souvent.
 
-- **float32 natif** : `matmul_nt`, `matmul_nt_gelu`, `gelu`, `gelu_backward`
-  acceptent float32 (8 lanes/vector) → **×2.00 vs f64** mesuré
-  (13.5 → 26.8 GFLOPS @1024³). Dispatch automatique sur le dtype numpy.
-- **Backward erf/tanh/sigmoid** : gradients exacts des approximations
-  rationnelles, gradcheck ~1.6e-09. Training complet possible :
-  `erf_backward`, `tanh_backward`, `sigmoid_backward`.
-- **`matmul_backward(dY,A,B)`** : gradients (dA,dB) du matmul NT —
-  gradcheck 1e-10 ; la backprop d'une couche complète tient en
-  `gelu_backward` + `matmul_backward` + biais.
-- **Map kernel 4 entrées** : `out[i] = F(a[i], b[i], c[i], d[i])` via
-  tableau de pointeurs ; `spur_free(handle)` + slots réutilisables ;
-  builds sérialisés (SRWLOCK) — exec réentrant.
-
-### Feuille de route
-
-| Item | Statut | Déclencheur |
-|---|---|---|
-| bf16/fp16 | différé | aucun compute natif bf16 en AVX2 ; fp16 = upconvert partout — à faire sur besoin mémoire exprimé |
-| Dispatch AVX-512 | différé | aucun CPU de test dispo (runners CI = AVX2 max) |
-| Wheels manylinux pré-compilés | **job CI `linux-wheel`** (auditwheel, artifact à chaque run) | publication automatique au tag si besoin |
-
-## Matmul (bench_mm)
-
-`examples/bench_mm.c` — C = A·B double, validation vs naif incluse.
-
-| n | naif ikj | dot scalaire | AVX2 dot | AVX4 bloc + OMP |
-|---|---|---|---|---|
-| 128 | 2.0 ms (2.1 GF) | ×0.12 | ×0.45 | ×0.73 (série) |
-| 256 | 23 ms (1.5 GF) | ×0.24 | ×1.02 | **×1.61** |
-| 512 | 198 ms (1.4 GF) | ×0.31 | ×0.37 | **×2.56** (3.5 GFLOPS) |
-
-- err ≤ 1.6e-14 sur toutes les variantes
-- blocage registres 4 lignes : chaque ligne de Bᵀ sert 4 rangs de A, 4 chaînes FMA indépendantes
-- OpenMP activé seulement si n ≥ 192 ; lancer avec `OMP_WAIT_POLICY=ACTIVE`
-- timings VM bruités (±2× entre runs), gains observés jusqu'à ×12 à n=256 machine au repos
-
-## Matmul API (v0.2+)
-
-`sm.matmul_nt(A, B)` — C = A·Bᵀ, convention BLAS NT, double précision.
-
-- **Tuillage cache** KC×NC (512 Ko/tuile en L2) + blocage registres 4 lignes,
-  4 chaînes FMA indépendantes, OpenMP
-- err ≤ 1.4e-13 vs numpy sur toutes tailles (512→2048), y compris queues m%4
-- `matmul_nt_gelu` : activation fusionnée — la gelu est non linéaire donc k
-  n'est pas coupé, seulement le blocage colonnes
-
-| Cas | SpearVM | numpy BLAS |
-|---|---|---|
-| carré 512 | 24.5 GFLOPS | 48.2 GFLOPS (×0.51) |
-| carré 1024 | 13.9 GFLOPS | 18.0 GFLOPS (×0.77) |
-| carré 2048 | 10.3 GFLOPS | 23.5 GFLOPS (×0.44) |
-| **FFN 1024×768×3072 fusionné gelu** | **353 ms** | **858 ms (×2.43)** |
-
-Lecture honnête : en GEMM carré pur, OpenBLAS/MKL reste devant (packing AVX,
-microkernels plus larges). Là où SpearVM gagne, c'est le **pipeline fusionné**
-— un passage au lieu de deux, zéro buffer intermédiaire — et l'intégration
-NT sans copies.
-
-## Pipeline NN end-to-end (bench_nn)
-
-`Y = gelu(X · Wᵀ)` — pattern FFN transformer. M=1024, K=768, N=3072 (4.8 GFLOP).
-
-| Implémentation | Total | Détail |
-|---|---|---|
-| **SpearVM** (`matmul_nt_gelu`, tuilé) | **353 ms (×2.43 vs numpy)** | 13.7 GFLOPS équivalents, err 0.0797 |
-
-- err max vs référence exacte : **0.0797** (= contrat datasheet gelu ≤0.079)
-- la forme linéarisée sature proprement hors domaine : err bornée ~0.002·|x| jusqu'à ±25
-- validation : `bin/bench_nn.exe` puis `python examples/check_nn.py`
-
-```bash
-gcc -O3 -mavx2 -mfma -fopenmp examples/bench_nn.c src/spur_kernels.c -o bench_nn -lm
-OMP_WAIT_POLICY=ACTIVE ./bench_nn && python examples/check_nn.py
-```
-
-## Précision (datasheet)
-
-Chaque noyau documente son erreur max vs IEEE :
-- gelu : ≤ 0.079 sur [-2, 2]
-- erf : ≤ 0.011 sur [-2, 2]
-- tanh : ≤ 0.009 sur [-3, 3]
-- lse2 : hard-max (écart ≤ ln 2)
-
-### GELU — trois variantes au choix
-
-| Variante | L-inf | MSE | Opérations | Binding Python |
-|---|---|---|---|---|
-| `gelu` (v1, legacy) | 0.079 | 7.9e-4 | 3 mul + clamp | `gelu(x)` |
-| `gelu_quintic` (v2 smoothstep) | 0.0174 | 1.35e-4 | 5 mul, 0 div | `gelu_quintic(x)` |
-| `gelu_erf` (haute précision) | **2.05e-5** | **8.3e-11** | Horner 5/6 + 1 div | `gelu_erf(x)` |
-
-Les trois sont **100 % ALU** (aucune transcendance `exp`/`erf`). Le `gelu_erf` réutilise le
-rationnel `erf_v2` certifié : `GELU = 0.5·x·(1+erf(x/√2))`, avec clamp à 3.5 (saturation
-`GELU→x` pour `x>~4.95`, correct asymptotiquement).
-
-**Compromis débit vs précision** (batch AVX2, min-of-N, machine 2 cœurs partagés) :
-le surcoût arithmétique de `gelu_erf` (1 division + Horner 5/6 en plus) est **masqué à
-l'échelle batch par la bande passante mémoire** — mesuré entre −17 % et +21 % selon le run,
-moyenne ≈ 0 (dans le bruit de la VM cloud). À taille cache, le surcoût médian est ~20 %.
-Règle pratique : **quintic quand le nombre d'ops compte (kernel fuse), `erf` quand la
-précision prime (training, backprop)** — le gain de précision est ×850 pour un coût arithmétique marginal.
-
-> 📊 **Voir [`CHAMPIONS.md`](CHAMPIONS.md)** pour le répertoire complet des formes
-> championnes (GELU / Tanh / Sigmoid / SiLU), leurs coefficients et le compromis
-> speed vs accuracy.
-
-## Build
-
-```bash
-make              # DLL + tests
-gcc -O3 -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll
-```
-
-## Installation Python
-
-```bash
-pip install spur-math          # v0.5.3 sur PyPI
-```
-
-Ou depuis les sources (compile la DLL puis installe) :
-
-```bash
-python build_package.py --install
-```
-
-> Note : le wheel actuel embarque un binaire Windows x64. Sur Linux/macOS,
-> compilez le `.so` vous-meme avec la ligne gcc ci-dessus (le package affiche
-> la commande exacte si la lib manque). Le JIT est désormais portable
-> (voir `src/spur_posix.c` pour le portage POSIX : mmap/mprotect, System V ABI).
-
-## Training (backprop)
+## Entraînement de MLP (`spur_math.nn`)
 
 ```python
-import spur_math as sm
+import numpy as np
+from spur_math.nn import SpearMLP, Adam, train_step
 
-# forward fusionne
-Y = sm.matmul_nt_gelu(X, W)            # Y = gelu(X . W^T), un seul passage
-
-# backward — les gradients passent par le meme matmul
-T  = sm.matmul_nt(X, W)
-dY = dLdY * sm.gelu_backward(np.ones_like(T), T)   # ou directement gelu_backward(dLdY, T)
-dW = sm.matmul_nt(dY.T, X.T)
-dX = sm.matmul_nt(dY, W.T)
+net = SpearMLP([64, 128, 10], seed=0)      # GELU exacte sur les couches cachées
+opt = Adam(net, lr=3e-3)
+for xb, yb in batches:                      # X float32, y int64
+    loss = train_step(net, opt, xb, yb)     # forward, backward exact, Adam
+logits = net.predict_logits(X)
+acc = net.accuracy(X_test, y_test)
 ```
 
-Gradients verifies par differences finies (err ~1e-10) et SGD convergeant
-(loss /87 en 300 pas, `tests/test_train.py`).
+- `SpearMLP.loss_and_grads` : entropie croisée softmax, rétropropagation exacte (`gelu_backward` + `matmul_nt`).
+  Gradients vérifiés contre différences finies en f64 et contre PyTorch en f32 (`tests/test_nn_mlp.py`).
+- `Adam` : tampon de paramètres plat (une dizaine d'opérations numpy par pas), écart 1e-7 avec l'Adam classique.
+- Le forward d'entraînement garde la pré-activation (nécessaire au backward) : le FFN fusionné n'est pas utilisé à l'entraînement.
 
-## Usage Python
+## Inférence par lots : `PackedNT` / `PackedMLP`
+
+`PackedNT(W)` pré-empaquette les poids une fois ; chaque appel ne packe que l'entrée.
 
 ```python
-import ctypes
-lib = ctypes.CDLL("spur_kernels.dll")
-# voir examples/bench_kernels.c pour l'API C complète
+from spur_math import PackedNT
+from spur_math.nn import PackedMLP
+
+P = PackedNT(W)                       # W (n, k) float32
+C = P.matmul(A)                       # A . W^T
+H = P.matmul_gelu(A, bias)            # gelu(A . W^T + bias), épilogue fusionné
+
+serve = PackedMLP(net)                # MLP entraîné -> inférence rapide
+logits = serve.predict_logits(X)      # écart 1e-5 vs net.predict_logits
 ```
+
+Le packing de B représente environ 30 % du temps à M=128, d'où l'intérêt de pré-empaqueter les poids.
+Hors AVX-512, `PackedNT` retombe sur `matmul_nt` / `matmul_nt_gelu` (mêmes résultats).
+
+## Graphe de calcul et rétropropagation
+
+```python
+from spur_math.graph import Graph
+g = Graph()
+x = g.input("x")
+h = g.gelu(g.matmul_nt(x, W1, bias=b1))   # fusionne -> matmul_nt_gelu (AVX-512)
+y = g.matmul_nt(h, W2)
+out = g.run({"x": X})[y]
+```
+
+Rétropropagation : `g.backward(out, feeds, dout, wrt=[...])` (gradients exacts, gradcheck en f64 dans
+`tests/test_graph.py`). Le graphe recalcule le forward à chaque backward : pour une boucle d'entraînement,
+utilisez `spur_math.nn`.
+
+## Précision
+
+Chaque noyau documente son erreur contre la loi exacte.
+
+| Noyau | Erreur max | Notes |
+|---|---|---|
+| `gelu_erf` (**défaut du FFN fusionné et du backward**) | **2,05e-5** (MSE 8,3e-11) | Horner 5/6 + 1 division, rationnel `erf_v2` |
+| `gelu_quintic` (smoothstep) | 0,0174 | 5 multiplications, 0 division |
+| `gelu` (v1, legacy) | 0,079 | approximation grossière, conservée pour compatibilité |
+| `erf`, `tanh` | ≤ 0,011 et ≤ 0,009 | sur [-2, 2] et [-3, 3] |
+
+Le FFN fusionné et sa dérivée utilisent la GELU exacte (écart 2,2e-5 contre la loi exacte, dérivée
+vérifiée à 1,4e-9 en f64). Les anciens chiffres « err max 0,0797 » datent de la GELU v1 et ne s'appliquent plus.
+Comparatif des formes championnes : [`CHAMPIONS.md`](CHAMPIONS.md) et [`docs/CHAMPIONS_SUPERSPEAR.md`](docs/CHAMPIONS_SUPERSPEAR.md).
+
+## Benchmarks
+
+### Mesures actuelles (VM 2 cœurs, AVX-512 ; forcer AVX2 : `SPUR_FORCE_AVX2=1`)
+
+| Cas | SpearVM AVX-512 | SpearVM AVX2 | numpy (OpenBLAS) |
+|---|---|---|---|
+| f32 `matmul_nt` 512³ | 1,8 ms (147 GF) | 3,2 ms (85 GF) | 1,3 ms |
+| f32 `matmul_nt` 1024×768×3072 | 31,2 ms (155 GF) | 62,3 ms (78 GF) | 19,1 ms |
+| f32 `matmul_nt_gelu` fusionné 1024×768×3072 | 28,6 ms | 177,9 ms | — |
+| f64 `matmul_nt` 1024³ | 27,4 ms (78 GF) | 66,1 ms (33 GF) | 16,5 ms |
+| f64 `matmul_nt_gelu` fusionné 1024×768×3072 | 67 ms | 131 ms | — |
+
+Lecture honnête : en GEMM pur, SpearVM reste environ 1,3 à 1,6× plus lent qu'OpenBLAS. Son avantage est le
+pipeline fusionné (GELU appliquée à l'écriture, sans buffer intermédiaire) et l'absence de dépendance BLAS.
+
+### Encodeur Transformer end-to-end
+
+[`docs/BENCH_ENCODER_E2E.md`](docs/BENCH_ENCODER_E2E.md) : encodeur 12 couches, d=384, FFN 1536, séquence 128,
+contre PyTorch CPU et ONNX Runtime (attention, LayerNorm et softmax restent sur PyTorch).
+Avec la GELU exacte, batch 1 : PyTorch 36,4 ms, ONNX Runtime 31,5 ms, SpearVM 45,9 ms (≈0,8× PyTorch).
+**SpearVM est plus lent sur ce modèle**, et l'écart de sortie est de 1e-5 (cosinus 1,000000).
+
+### Éléments (4M éléments, OpenMP) — historique v0.4
+
+| Noyau | Natif libm | AVX2 SPEAR | Speedup |
+|---|---|---|---|
+| GELU | 120 ms | 8 ms | ×15,0 |
+| ERF | 306 ms | 9 ms | ×34,0 |
+| TANH | 234 ms | 9 ms | ×26,0 |
+
+Ces chiffres datent de la version 0.4 (GELU approchée). Les noyaux exacts sont plus lents.
+
+### Matmul C (`examples/bench_mm.c`) — historique
+
+| n | naïf ikj | AVX2 dot | AVX4 bloc + OMP |
+|---|---|---|---|
+| 256 | 23 ms (1,5 GF) | ×1,02 | ×1,61 |
+| 512 | 198 ms (1,4 GF) | ×0,37 | ×2,56 (3,5 GF) |
+
+Les timings de la VM sont bruités (±15 % à ±2× selon les runs).
+
+## Build, tests, installation
+
+```bash
+make                 # bibliothèque native + tests C
+make test            # tests C puis pytest (PYTHONPATH=. python -m pytest tests/ -q)
+python -m pytest tests/ -q
+```
+
+Dépendances des tests : `numpy`, `pytest`. Les cas d'usage et les comparaisons utilisent aussi
+`scikit-learn`, `torch` (CPU) et `onnxruntime` (benchmark encodeur) ; ils ne sont pas requis pour le paquet.
+
+Le test de fumée des cas d'usage (`tests/test_usecases_smoke.py`) exécute chaque script avec peu d'époques
+sans écrire les résultats commités.
+
+```bash
+gcc -O3 -mavx2 -mfma -fopenmp src/spur_kernels.c -shared -o spur_kernels.dll   # manuel
+python build_package.py --install                                              # depuis les sources
+```
+
+Installation depuis PyPI (`pip install spur-math`, version 0.5.3) : le wheel embarque un binaire Windows x64 ;
+sur Linux/macOS, la bibliothèque se compile au premier import (ou avec la commande gcc ci-dessus).
+Le JIT est portable (`src/spur_posix.c` : mmap/mprotect, ABI System V).
 
 ## Architecture
 
 ```
-src/spur_kernels.c    Kernels AVX2 vectorisés + OpenMP
-include/spur.h        API publique
-examples/             Benchmarks et démos
-tests/                Tests de correction
+src/spur_kernels.c    noyaux AVX2/AVX-512 vectorisés + OpenMP
+src/spur_posix.c      JIT x64 POSIX
+include/spur.h        API C publique
+spur_math/__init__.py API Python (matmul, GELU, PackedNT)
+spur_math/nn.py       MLP, Adam, PackedMLP
+spur_math/graph.py    graphe de calcul et rétropropagation
+examples/             benchmarks, comparaisons, cas d'usage (examples/usecases/)
+tests/                tests de correction (pytest + tests C)
+docs/                 notes de benchmark et de précision
 ```
+
+## Feuille de route
+
+| Item | Statut | Déclencheur |
+|---|---|---|
+| GELU exacte dans le FFN fusionné f32/f64 | **fait** | — |
+| Dispatch AVX-512 (f32 et f64 matmul, FFN) | **fait** | `SPUR_FORCE_AVX2=1` pour forcer AVX2 |
+| `PackedNT` / `PackedMLP` pour l'inférence | **fait** | — |
+| FFN fusionné dans le forward d'entraînement | à faire | nécessite de stocker la pré-activation autrement |
+| bf16 / fp16 | différé | pas de `avx512_bf16` sur la machine de test |
+| Wheels manylinux pré-compilés | job CI `linux-wheel` (artifact à chaque run) | publication au tag si besoin |
 
 ## Limitations
 
-- Windows x64 + Linux/macOS x64 (JIT POSIX porté)
-- Précision approximative (±0.01–0.09 selon noyau)
-- Pas de support GPU
+- Le paquet PyPI embarque un binaire Windows x64 ; Linux/macOS compilent à l'installation (gcc/clang requis).
+- CPU x86-64 seulement (AVX2 + FMA requis). Pas de support GPU.
+- Plus lent que OpenBLAS en GEMM pur, et plus lent que PyTorch sur l'encodeur Transformer testé.
+- Précision : GELU exacte (2e-5) dans le FFN fusionné ; les autres noyaux « rapides » ont une erreur de 1e-3 à 1e-2.
+- Les jeux de données des cas d'usage sont petits (178 à 1797 exemples) ; les conclusions sur la précision valent pour ces données.
 
 ## Licence
 

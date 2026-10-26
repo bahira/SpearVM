@@ -1,6 +1,8 @@
 """Gradients du matmul NT : dA/dB vs differences finies."""
 import numpy as np
 
+import spur_math as sm
+
 from spur_math import matmul_backward, matmul_nt_gelu
 
 
@@ -43,11 +45,7 @@ def test_backward_through_fused_layer():
     G = rng.normal(0, 1, (9, 4))
 
     Tpre = X @ W.T + bias
-    u = np.clip(0.306923 * Tpre + 0.501, 0, 1.002)
-    dY = G * 0.997729 * np.where(
-        (u > 0) & (u < 1.002), u + 0.306923 * Tpre,
-        np.where(u <= 0, 0.0, 1.002),
-    )
+    dY = G * sm.gelu_backward(np.ones_like(Tpre), Tpre)   # derivee exacte (gelu_erf)
     _, dW = matmul_backward(dY, X, W)
     dbias = dY.sum(axis=0)
 

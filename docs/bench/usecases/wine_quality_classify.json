@@ -1,0 +1,51 @@
+{
+  "dataset": "sklearn load_wine (178 vins, 13 features, 3 cultivars), CV 5 plis stratifiee",
+  "model": "MLP [13, 32, 3], GELU exacte, Adam lr=0.003, batch 16, 150 epochs; standardisation fittee par pli",
+  "results": {
+    "spearvm_mlp": {
+      "accuracy": {
+        "mean": 0.9832,
+        "std": 0.0137
+      },
+      "f1_macro": {
+        "mean": 0.9826,
+        "std": 0.0142
+      },
+      "log_loss": {
+        "mean": 0.0591,
+        "std": 0.0399
+      },
+      "train_seconds_total_5folds": 1.42
+    },
+    "pytorch_mlp": {
+      "accuracy": {
+        "mean": 0.9832,
+        "std": 0.0137
+      },
+      "f1_macro": {
+        "mean": 0.9826,
+        "std": 0.0142
+      },
+      "log_loss": {
+        "mean": 0.0511,
+        "std": 0.0384
+      },
+      "train_seconds_total_5folds": 5.745
+    },
+    "logistic_regression": {
+      "accuracy": {
+        "mean": 0.9832,
+        "std": 0.0137
+      },
+      "f1_macro": {
+        "mean": 0.9826,
+        "std": 0.0142
+      },
+      "log_loss": {
+        "mean": 0.0627,
+        "std": 0.0181
+      },
+      "train_seconds_total_5folds": 0.024
+    }
+  }
+}

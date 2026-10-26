@@ -321,3 +321,68 @@ def tanh(x):
     fn(xc.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
        out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), xc.size)
     return out
+
+
+# ---- poids pre-packes (inference) -------------------------------------------
+_PFc = ctypes.c_void_p
+_pack_nt_f32 = _dll.spur_pack_nt_f32
+_pack_nt_f32.argtypes = [_PF, ctypes.c_longlong, ctypes.c_longlong]
+_pack_nt_f32.restype = _PFc
+_free_packed = _dll.spur_free_packed
+_free_packed.argtypes = [_PFc]
+_free_packed.restype = None
+_avx512_active = _dll.spur_avx512_active
+_avx512_active.restype = ctypes.c_int
+_mm_packed = _dll.spur_matmul_nt_f32_packed
+_mm_packed.argtypes = [_PF, _PFc, _PF] + [ctypes.c_longlong] * 3
+_mm_packed.restype = None
+_mmg_packed = _dll.spur_matmul_nt_gelu_f32_packed
+_mmg_packed.argtypes = [_PF, _PFc, _PFc, _PF] + [ctypes.c_longlong] * 3
+_mmg_packed.restype = None
+
+
+class PackedNT:
+    """Poids W (n,k) float32 pre-packes une fois, reutilises a chaque appel.
+
+    Pour l'inference : le packing de B (≈30 % du temps a M=128) n'est fait qu'une fois.
+    Sans AVX-512, retombe sur matmul_nt / matmul_nt_gelu (memes resultats).
+    """
+
+    def __init__(self, W):
+        self.W = np.ascontiguousarray(W, dtype=np.float32)
+        self.n, self.k = self.W.shape
+        self._h = None
+        if _avx512_active():
+            self._h = _pack_nt_f32(self.W.ctypes.data_as(_PF), self.n, self.k)
+
+    def __del__(self):
+        h = getattr(self, "_h", None)
+        if h:
+            _free_packed(h)
+            self._h = None
+
+    def _ptr(self, a):
+        return a.ctypes.data_as(_PF)
+
+    def matmul(self, A):
+        """C = A . W^T ; A (m,k) float32."""
+        A = np.ascontiguousarray(A, dtype=np.float32)
+        if self._h is None:
+            return matmul_nt(A, self.W)
+        m = A.shape[0]
+        C = np.empty((m, self.n), dtype=np.float32)
+        _mm_packed(self._ptr(A), self._h, self._ptr(C), m, self.k, self.n)
+        return C
+
+    def matmul_gelu(self, A, bias=None):
+        """C = gelu(A . W^T + bias) ; A (m,k) float32, bias (n,) float32 ou None."""
+        A = np.ascontiguousarray(A, dtype=np.float32)
+        if bias is not None:
+            bias = np.ascontiguousarray(bias, dtype=np.float32)
+        if self._h is None:
+            return matmul_nt_gelu(A, self.W, bias)
+        m = A.shape[0]
+        C = np.empty((m, self.n), dtype=np.float32)
+        bp = bias.ctypes.data_as(_PFc) if bias is not None else None
+        _mmg_packed(self._ptr(A), self._h, bp, self._ptr(C), m, self.k, self.n)
+        return C
