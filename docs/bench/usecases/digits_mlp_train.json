@@ -3,12 +3,12 @@
   "model": "MLP [64, 128, 10], GELU exacte, Adam lr=0.003, batch 64, 40 epochs",
   "spearvm": {
     "test_accuracy": 0.9844,
-    "train_seconds": 0.427
+    "train_seconds": 0.411
   },
   "pytorch_cpu": {
     "test_accuracy": 0.9844,
-    "train_seconds": 0.725
+    "train_seconds": 0.707
   },
-  "max_weight_diff_after_training": 0.0003166869282722473,
+  "max_weight_diff_after_training": 0.000316716730594635,
   "note": "les poids divergent par accumulation d'arrondis fp32 ; la metrique utile est la precision"
 }

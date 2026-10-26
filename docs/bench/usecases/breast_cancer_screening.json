@@ -15,7 +15,7 @@
         "mean": 0.9775,
         "std": 0.0191
       },
-      "train_seconds_total_5folds": 2.985
+      "train_seconds_total_5folds": 2.537
     },
     "pytorch_mlp": {
       "accuracy": {
@@ -30,7 +30,7 @@
         "mean": 0.9776,
         "std": 0.0113
       },
-      "train_seconds_total_5folds": 8.978
+      "train_seconds_total_5folds": 9.075
     },
     "logistic_regression": {
       "accuracy": {
@@ -45,7 +45,7 @@
         "mean": 0.9915,
         "std": 0.0069
       },
-      "train_seconds_total_5folds": 0.019
+      "train_seconds_total_5folds": 0.02
     }
   }
 }
