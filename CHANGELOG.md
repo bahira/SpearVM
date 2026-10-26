@@ -6,6 +6,10 @@
   `tests/test_matmul_f32_tail.py`.
 - **AVX-512** : micro-noyau GEMM f32 (8×16, B packé par panneaux), dispatch à l'exécution.
   ~100 GFLOPS vs ~80 en AVX2 sur 512³ (VM 2 cœurs). Forcer AVX2 : `SPUR_FORCE_AVX2=1`.
+- **AVX-512 fusionné** : `matmul_nt_gelu` f32 (k non tuilé, biais + gelu à l'écriture) :
+  42.9 ms vs 178.6 ms en AVX2 sur 1024×768×3072 (×4.2).
+- **Runtime de graphe** `spur_math.graph` : `Graph`, passe de fusion `matmul_nt -> gelu`
+  vers le noyau fusionné (seulement si le matmul n'a qu'un consommateur).
 
 ## 0.5.1
 - `dependencies=["numpy"]` declaree (manquait depuis 0.1.0)

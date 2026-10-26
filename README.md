@@ -131,6 +131,20 @@ précision prime (training, backprop)** — le gain de précision est ×850 pour
 > championnes (GELU / Tanh / Sigmoid / SiLU), leurs coefficients et le compromis
 > speed vs accuracy.
 
+## Graphe de calcul (v0.6 dev)
+
+```python
+from spur_math.graph import Graph
+g = Graph()
+x = g.input("x")
+h = g.gelu(g.matmul_nt(x, W1, bias=b1))   # fusionne -> matmul_nt_gelu (AVX-512)
+y = g.matmul_nt(h, W2)
+out = g.run({"x": X})[y]
+```
+
+Mesures f32 (VM 2 cœurs) : FFN fusionné 1024×768×3072 — AVX-512 **42.9 ms**,
+AVX2 178.6 ms. Forcer AVX2 : `SPUR_FORCE_AVX2=1`.
+
 ## Build
 
 ```bash

@@ -69,3 +69,32 @@ def test_matmul_nt_f32_avx512_eq_avx2(m, k, n):
         c512 = _run_mode("SPUR_FORCE_AVX512", m, k, n, os.path.join(d, "a.npy"))
         c2 = _run_mode("SPUR_FORCE_AVX2", m, k, n, os.path.join(d, "b.npy"))
     assert np.abs(c512 - c2).max() <= 1e-4 * np.sqrt(k)
+
+
+_CHILD_GELU = r"""
+import sys, numpy as np, spur_math as sm
+m,k,n,usebias = map(int, sys.argv[1:5])
+rng = np.random.default_rng(7)
+A = rng.standard_normal((m,k)).astype(np.float32)
+B = rng.standard_normal((n,k)).astype(np.float32)
+bias = rng.standard_normal(n).astype(np.float32) if usebias else None
+np.save(sys.argv[5], sm.matmul_nt_gelu(A,B,bias))
+"""
+
+
+@pytest.mark.parametrize("m,k,n,bias", [(40, 600, 300, 1), (33, 257, 17, 0),
+                                         (8, 16, 16, 1), (9, 768, 37, 1)])
+def test_matmul_nt_gelu_f32_avx512_eq_avx2(m, k, n, bias):
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    outs = {}
+    with tempfile.TemporaryDirectory() as d:
+        for mode in ("SPUR_FORCE_AVX512", "SPUR_FORCE_AVX2"):
+            env = dict(os.environ, PYTHONPATH=repo)
+            env.pop("SPUR_FORCE_AVX2", None)
+            env.pop("SPUR_FORCE_AVX512", None)
+            env[mode] = "1"
+            out = os.path.join(d, mode + ".npy")
+            subprocess.check_call([sys.executable, "-c", _CHILD_GELU, str(m),
+                                   str(k), str(n), str(bias), out], env=env)
+            outs[mode] = np.load(out)
+    assert np.abs(outs["SPUR_FORCE_AVX512"] - outs["SPUR_FORCE_AVX2"]).max() <= 1e-4 * np.sqrt(k)
