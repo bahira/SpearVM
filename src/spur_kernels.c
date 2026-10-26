@@ -526,9 +526,99 @@ void spur_matmul_nt(const double* A,const double* B,double* C,
 /* Variante fusionnee : C = gelu(A . B^T). La gelu est non-lineaire :
    k ne peut PAS etre coupe -> blocage colonnes seul (tuile B de NC x k
    reste chaude pendant le sweep des lignes de A).                          */
+/* GEMM NT f64 fusionne gelu(A.B^T + bias), AVX-512, micro-noyau 8x16.
+   k non tuile (gelu non lineaire). Retourne 0 si malloc echoue (repli AVX2). */
+#ifdef SPIR_HAS_TARGET_ATTR
+__attribute__((target("avx512f,avx512vl")))
+#endif
+static int spur_matmul_nt_gelu_avx512(const double* A,const double* B,
+                                      const double* bias,double* C,
+                                      long long m,long long k,long long n){
+    double* Bp=(double*)malloc(sizeof(double)*(size_t)(MM_NC+NRD)*(size_t)k);
+    if(!Bp) return 0;
+    const __m512d c306=_mm512_set1_pd(0.306923),c501=_mm512_set1_pd(0.501);
+    const __m512d cm=_mm512_set1_pd(1.002),z=_mm512_setzero_pd();
+    const __m512d ck=_mm512_set1_pd(0.997729),cb=_mm512_set1_pd(-0.004004);
+    for(long long jb=0;jb<n;jb+=MM_NC){
+        const long long je=(jb+MM_NC<n)?jb+MM_NC:n;
+        const long long npan=(je-jb+NRD-1)/NRD;
+        #pragma omp parallel for schedule(static)
+        for(long long p=0;p<npan;p++){
+            const long long j0=jb+NRD*p;
+            const long long valid=(je-j0<NRD)?je-j0:NRD;
+            double* dst=Bp+(size_t)p*k*NRD;
+            for(long long q=0;q<k;q++)
+                for(long long jj=0;jj<NRD;jj++)
+                    dst[q*NRD+jj]=(jj<valid)?B[(size_t)(j0+jj)*k+q]:0.0;
+        }
+        #define SPUR_EPID(ACC,PTR,MK,J0)                                       \
+            do{                                                                \
+                __m512d xb=_mm512_add_pd(ACC,                                  \
+                    (bias)?_mm512_maskz_loadu_pd(MK,bias+(J0)):z);             \
+                __m512d u=_mm512_fmadd_pd(c306,xb,c501);                       \
+                u=_mm512_min_pd(_mm512_max_pd(u,z),cm);                        \
+                __m512d g=_mm512_fmadd_pd(_mm512_mul_pd(xb,u),ck,cb);          \
+                _mm512_mask_storeu_pd((PTR),(MK),g);                           \
+            }while(0)
+        #pragma omp parallel for schedule(static)
+        for(long long i0=0;i0<m/8;i0++){
+            const double* ar=A+(size_t)i0*8*k;
+            double* cr=C+(size_t)i0*8*n;
+            for(long long p=0;p<npan;p++){
+                const long long j0=jb+NRD*p;
+                const long long valid=(je-j0<NRD)?je-j0:NRD;
+                const __mmask8 m0=(__mmask8)((valid>=8)?0xFF:((1u<<valid)-1));
+                const __mmask8 m1=(__mmask8)((valid<=8)?0:((valid>=16)?0xFF:((1u<<(valid-8))-1)));
+                const double* bp=Bp+(size_t)p*k*NRD;
+                __m512d lo[8],hi[8];
+                for(int r=0;r<8;r++){ lo[r]=_mm512_setzero_pd(); hi[r]=_mm512_setzero_pd(); }
+                for(long long q=0;q<k;q++){
+                    const __m512d b0=_mm512_loadu_pd(bp+q*NRD);
+                    const __m512d b1=_mm512_loadu_pd(bp+q*NRD+8);
+                    for(int r=0;r<8;r++){
+                        const __m512d a=_mm512_set1_pd(ar[r*k+q]);
+                        lo[r]=_mm512_fmadd_pd(a,b0,lo[r]);
+                        hi[r]=_mm512_fmadd_pd(a,b1,hi[r]);
+                    }
+                }
+                for(int r=0;r<8;r++){
+                    SPUR_EPID(lo[r],cr+(size_t)r*n+j0,m0,j0);
+                    SPUR_EPID(hi[r],cr+(size_t)r*n+j0+8,m1,j0+8);
+                }
+            }
+        }
+        #pragma omp parallel for schedule(static)
+        for(long long i=(m/8)*8;i<m;i++){
+            const double* ar=A+(size_t)i*k;
+            double* cr=C+(size_t)i*n;
+            for(long long p=0;p<npan;p++){
+                const long long j0=jb+NRD*p;
+                const long long valid=(je-j0<NRD)?je-j0:NRD;
+                const __mmask8 m0=(__mmask8)((valid>=8)?0xFF:((1u<<valid)-1));
+                const __mmask8 m1=(__mmask8)((valid<=8)?0:((valid>=16)?0xFF:((1u<<(valid-8))-1)));
+                const double* bp=Bp+(size_t)p*k*NRD;
+                __m512d l=_mm512_setzero_pd(),h=_mm512_setzero_pd();
+                for(long long q=0;q<k;q++){
+                    const __m512d a=_mm512_set1_pd(ar[q]);
+                    l=_mm512_fmadd_pd(a,_mm512_loadu_pd(bp+q*NRD),l);
+                    h=_mm512_fmadd_pd(a,_mm512_loadu_pd(bp+q*NRD+8),h);
+                }
+                SPUR_EPID(l,cr+j0,m0,j0);
+                SPUR_EPID(h,cr+j0+8,m1,j0+8);
+            }
+        }
+        #undef SPUR_EPID
+    }
+    free(Bp);
+    return 1;
+}
+
 void spur_matmul_nt_gelu(const double* A,const double* B,
                          const double* bias,double* C,
                          long long m,long long k,long long n){
+    if(__builtin_expect(spur_use_avx512(1),0)){
+        if(spur_matmul_nt_gelu_avx512(A,B,bias,C,m,k,n)) return;
+    }
     /* bias : NULL = sans biais, sinon tableau de n (ajoute AVANT gelu)   */
     for(long long jb=0;jb<n;jb+=MM_NC){
         const long long je=(jb+MM_NC<n)?jb+MM_NC:n;

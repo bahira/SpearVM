@@ -42,6 +42,7 @@ pip install spur-math
 
 | Item | Statut | Déclencheur |
 |---|---|---|
+| GELU fusionné f64 AVX-512 | **fait** | — |
 | bf16/fp16 | différé | CPU de test sans `avx512_bf16` (flag absent) : non testable ici ; à faire sur besoin mémoire exprimé |
 | Dispatch AVX-512 | **fait (f32 matmul_nt)** | runtime `avx512f` ; `SPUR_FORCE_AVX2=1` pour forcer AVX2 ; reste des noyaux à porter |
 | Wheels manylinux pré-compilés | **job CI `linux-wheel`** (auditwheel, artifact à chaque run) | publication automatique au tag si besoin |
@@ -153,6 +154,7 @@ gradcheck en f64 dans `tests/test_graph.py`).
 | f32 `matmul_nt` 1024×768×3072 | 31.2 ms (155 GF) | 62.3 ms (78 GF) | 19.1 ms |
 | f32 `matmul_nt_gelu` fusionné 1024×768×3072 | 28.6 ms | 177.9 ms | — |
 | f64 `matmul_nt` 1024³ | 27.4 ms (78 GF) | 66.1 ms (33 GF) | 16.5 ms |
+| f64 `matmul_nt_gelu` fusionné 1024×768×3072 | 67 ms | 131 ms | — |
 
 Lecture honnête : SpearVM double AVX2 en AVX-512 mais reste **≈1,3 à 1,6× plus lent qu'OpenBLAS**
 en GEMM pur. Son avantage est le pipeline fusionné (GELU appliqué à l'écriture, sans buffer

@@ -7,6 +7,7 @@
   `make clean` ne supprime plus le fichier suivi `map_dbg.bin`.
 - **GEMM f32/f64 AVX-512 en micro-noyau 8x32 / 8x16** avec packing de B et de A ; f32 ~146 GFLOPS
   (AVX2 : ~85), f64 ~97 GFLOPS (AVX2 : ~41) sur 512^3, VM 2 coeurs.
+- **GELU fusionné f64 AVX-512** (`matmul_nt_gelu`, 8x16) : 67 ms vs 131 ms en AVX2 sur 1024×768×3072.
 - **Graphe** : rétropropagation `Graph.backward` (matmul NT + biais + gelu), gradcheck
   par differences finies en f64 et entrainement SGD reel (test).
 - **fix** `matmul_nt` float32 : résultats faux quand `k % 8 != 0` (le reste de la

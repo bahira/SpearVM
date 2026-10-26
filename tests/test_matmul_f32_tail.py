@@ -108,3 +108,15 @@ def test_matmul_nt_f64_tail(m, k, n):
     B = rng.standard_normal((n, k))
     C = sm.matmul_nt(A, B)
     assert np.abs(C - A @ B.T).max() < 1e-11 * max(1, np.sqrt(k))
+
+
+@pytest.mark.parametrize("m,k,n,bias", [(40, 600, 300, 1), (9, 33, 17, 0),
+                                         (8, 16, 16, 1), (3, 7, 2, 1)])
+def test_matmul_nt_gelu_f64_fused(m, k, n, bias):
+    rng = np.random.default_rng(m * k + n)
+    A = rng.standard_normal((m, k))
+    B = rng.standard_normal((n, k))
+    b = rng.standard_normal(n) if bias else None
+    C = sm.matmul_nt_gelu(A, B, b)
+    T = A @ B.T + (b if bias else 0.0)
+    assert np.abs(C - sm.gelu(T)).max() < 1e-11
