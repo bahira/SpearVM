@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 static uint8_t buf[512];
 static int pos;
@@ -77,6 +79,7 @@ static void expect(const char* name, const uint8_t* exp, int n) {
 typedef void (*mapfn)(const double*, const double*, double*, long long);
 
 static int run_smoke(void) {
+#ifdef _WIN32
     SYSTEM_INFO si; GetSystemInfo(&si);
     DWORD sz = (DWORD)((si.dwPageSize + 511) / 512 * 512);
     uint8_t* code = VirtualAlloc(NULL, sz, MEM_COMMIT | MEM_RESERVE,
@@ -129,6 +132,11 @@ static int run_smoke(void) {
     if (ok) printf("PASS execution smoke (out[i]=in0[i]+in1[i], 4 elems)\n");
     VirtualFree(code, 0, MEM_RELEASE);
     return !ok;
+#else
+    /* smoke = execution Win64 (VirtualAlloc, rcx/rdx/r8/r9) : skip hors Windows.
+       Les tests d'encodage ci-dessus restent verifies octet par octet. */
+    printf("SKIP execution smoke (ABI Win64 uniquement)\n"); return 0;
+#endif
 }
 
 int main(void) {

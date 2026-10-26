@@ -98,3 +98,13 @@ def test_matmul_nt_gelu_f32_avx512_eq_avx2(m, k, n, bias):
                                    str(k), str(n), str(bias), out], env=env)
             outs[mode] = np.load(out)
     assert np.abs(outs["SPUR_FORCE_AVX512"] - outs["SPUR_FORCE_AVX2"]).max() <= 1e-4 * np.sqrt(k)
+
+
+@pytest.mark.parametrize("m,k,n", [(9, 5, 17), (8, 1, 16), (17, 300, 33),
+                                    (40, 600, 300), (3, 7, 2)])
+def test_matmul_nt_f64_tail(m, k, n):
+    rng = np.random.default_rng(m + 31 * k + 97 * n)
+    A = rng.standard_normal((m, k))
+    B = rng.standard_normal((n, k))
+    C = sm.matmul_nt(A, B)
+    assert np.abs(C - A @ B.T).max() < 1e-11 * max(1, np.sqrt(k))

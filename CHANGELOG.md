@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- **Build** : `make all` et `make test` fonctionnent sous Linux (le JIT utilisait `src/spur.c`
+  Win64 et ne compilait pas ; on prend maintenant `src/spur_posix.c` -> `bin/spur.so`).
+  `tests/test_encoding.c` : encodages verifies partout, smoke d'execution Win64 seulement.
+  `make clean` ne supprime plus le fichier suivi `map_dbg.bin`.
+- **GEMM f32/f64 AVX-512 en micro-noyau 8x32 / 8x16** avec packing de B et de A ; f32 ~146 GFLOPS
+  (AVX2 : ~85), f64 ~97 GFLOPS (AVX2 : ~41) sur 512^3, VM 2 coeurs.
+- **Graphe** : rétropropagation `Graph.backward` (matmul NT + biais + gelu), gradcheck
+  par differences finies en f64 et entrainement SGD reel (test).
 - **fix** `matmul_nt` float32 : résultats faux quand `k % 8 != 0` (le reste de la
   boucle k était ignoré dans le bloc 8 lignes ; erreur ~8 sur `N(0,1)`). Test de régression
   `tests/test_matmul_f32_tail.py`.
