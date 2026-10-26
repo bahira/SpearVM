@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- **Cas d'usage concrets** (`examples/usecases/`, `docs/USECASES.md`) sur données réelles sklearn, sans téléchargement :
+  1) entraînement MLP digits : SpearVM 0,43 s contre PyTorch 0,73 s, même précision (0,9844) ;
+  2) diagnostic breast cancer en validation croisée : la régression logistique gagne, le MLP n'apporte rien (documenté) ;
+  3) service par lots digits : SpearVM plus rapide que PyTorch à partir du lot 32 (jusqu'à 3,05 M échantillons/s à lot 1024).
+- **Correctif performance** : `PackedMLP.predict_logits` utilise `matmul_gelu` (épilogue fusionné) au lieu de numpy + `gelu_erf`.
+  Lot 1024 : 2,13 ms -> 0,34 ms, même précision. Test de non-régression ajouté.
 - **GELU exacte dans le FFN fusionné (champion superspear)** : l'épilogue de `matmul_nt_gelu` (f32/f64,
   AVX-512 et replis) utilise maintenant `erf_v2` (= `gelu_erf`) au lieu de la GELU v1 approximative.
   Erreur contre la loi exacte : 0.08 -> 2.2e-5. Surcoût ~5-7 % sur le GEMM fusionné.

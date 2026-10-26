@@ -1,0 +1,14 @@
+{
+  "dataset": "sklearn load_digits (1797 x 8x8, 10 classes), split 75/25 stratifie",
+  "model": "MLP [64, 128, 10], GELU exacte, Adam lr=0.003, batch 64, 40 epochs",
+  "spearvm": {
+    "test_accuracy": 0.9844,
+    "train_seconds": 0.427
+  },
+  "pytorch_cpu": {
+    "test_accuracy": 0.9844,
+    "train_seconds": 0.725
+  },
+  "max_weight_diff_after_training": 0.0003166869282722473,
+  "note": "les poids divergent par accumulation d'arrondis fp32 ; la metrique utile est la precision"
+}

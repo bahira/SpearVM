@@ -1,0 +1,81 @@
+{
+  "dataset": "sklearn load_digits, 25% test",
+  "model": "MLP [64,128,10], GELU exacte, entraine 40 epochs (SpearVM)",
+  "test_accuracy": 0.9844,
+  "max_abs_logit_diff_vs_spearvm": {
+    "spearvm_packed": 8.6791059636937e-06,
+    "pytorch_cpu": 0.0001262266508481602,
+    "numpy_blas": 0.00012402905097186334
+  },
+  "latency_and_throughput_by_batch": {
+    "1": {
+      "spearvm_packed": {
+        "p50_ms": 0.0173,
+        "p90_ms": 0.0254,
+        "samples_per_s": 57894
+      },
+      "pytorch_cpu": {
+        "p50_ms": 0.0381,
+        "p90_ms": 0.0636,
+        "samples_per_s": 26237
+      },
+      "numpy_blas": {
+        "p50_ms": 0.0151,
+        "p90_ms": 0.0164,
+        "samples_per_s": 66388
+      }
+    },
+    "32": {
+      "spearvm_packed": {
+        "p50_ms": 0.0296,
+        "p90_ms": 0.0348,
+        "samples_per_s": 1081775
+      },
+      "pytorch_cpu": {
+        "p50_ms": 0.0592,
+        "p90_ms": 0.0736,
+        "samples_per_s": 540385
+      },
+      "numpy_blas": {
+        "p50_ms": 0.0821,
+        "p90_ms": 0.1031,
+        "samples_per_s": 389612
+      }
+    },
+    "256": {
+      "spearvm_packed": {
+        "p50_ms": 0.0979,
+        "p90_ms": 0.1159,
+        "samples_per_s": 2615314
+      },
+      "pytorch_cpu": {
+        "p50_ms": 0.1349,
+        "p90_ms": 0.1878,
+        "samples_per_s": 1897885
+      },
+      "numpy_blas": {
+        "p50_ms": 0.7196,
+        "p90_ms": 0.9103,
+        "samples_per_s": 355754
+      }
+    },
+    "1024": {
+      "spearvm_packed": {
+        "p50_ms": 0.3357,
+        "p90_ms": 0.4006,
+        "samples_per_s": 3050733
+      },
+      "pytorch_cpu": {
+        "p50_ms": 0.426,
+        "p90_ms": 0.4998,
+        "samples_per_s": 2403778
+      },
+      "numpy_blas": {
+        "p50_ms": 2.5343,
+        "p90_ms": 2.6953,
+        "samples_per_s": 404050
+      }
+    }
+  },
+  "machine": "VM 2 coeurs, AVX-512"
+}
