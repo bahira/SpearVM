@@ -14,6 +14,8 @@ pip install spur-math
 > Windows : wheel binaire prêt. Linux/macOS : le sdist embarque les sources C ;
 > au premier import, `spur_math` se compile tout seul si gcc/clang est présent
 > (cache dans `spur_math/_native/`), sinon suivez le message d'aide.
+> **Note Linux PyPI 0.5.3 (2026-11-19) :** une installation du paquet publié peut échouer à l'import si la bibliothèque native et la source C n'ont pas été embarquées. En attendant une nouvelle version publiée, utilisez une copie du dépôt avec `python build_package.py --install` pour compiler la bibliothèque. Le code source corrige cette lacune en incluant `spur_math/src/spur_kernels.c` dans les roues construites depuis le dépôt ; les nouveaux tests CI vérifient un sdist propre. Une correction du dépôt n'actualise pas rétroactivement les paquets PyPI déjà publiés.
+>
 > CPU requis : AVX2 + FMA (Haswell 2013+, Zen 2017+) — vérifié à l'import.
 > AVX-512 est utilisé automatiquement quand il est présent (`SPUR_FORCE_AVX2=1` pour le désactiver).
 
